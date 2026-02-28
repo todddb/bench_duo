@@ -33,14 +33,18 @@ def _model_to_dict(model: Model) -> dict[str, Any]:
 
 
 def _agent_to_dict(agent: Agent) -> dict[str, Any]:
+    effective_status = "green" if agent.status == "ready" and agent.model and agent.model.status == "green" else "yellow"
     return {
         "id": agent.id,
         "name": agent.name,
         "model_id": agent.model_id,
+        "model_name": agent.model.name if agent.model else None,
         "system_prompt": agent.system_prompt,
         "max_tokens": agent.max_tokens,
         "temperature": agent.temperature,
         "status": agent.status,
+        "model_status": agent.model.status if agent.model else "red",
+        "effective_status": effective_status,
     }
 
 
@@ -218,6 +222,7 @@ def probe_models() -> Any:
 
 @setup_bp.get("/agents")
 def get_agents() -> Any:
+    _refresh_all_model_statuses()
     agents = Agent.query.order_by(Agent.id.asc()).all()
     return jsonify({"success": True, "data": [_agent_to_dict(agent) for agent in agents]})
 

@@ -1,0 +1,13 @@
+<div class="modal" tabindex="-1" id="agent-modal">
+  <div class="modal-dialog"><div class="modal-content">
+    <div class="modal-header"><h5 class="modal-title">Agent</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <form id="agent-form"><div class="modal-body">
+      <input type="hidden" id="agent-id" />
+      <input class="form-control mb-2" id="agent-name" placeholder="Name" required />
+      <select class="form-select mb-2" id="agent-model-id" required></select>
+      <textarea class="form-control mb-2" id="agent-system-prompt" placeholder="System prompt" required></textarea>
+      <input class="form-control mb-2" id="agent-max-tokens" type="number" placeholder="Max tokens" value="256" required />
+      <input class="form-control" id="agent-temperature" type="number" step="0.1" value="0.2" placeholder="Temperature" required />
+    </div><div class="modal-footer"><button class="btn btn-primary" type="submit">Save</button></div></form>
+  </div></div>
+</div>

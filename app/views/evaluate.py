@@ -61,6 +61,30 @@ def create_evaluation() -> Any:
     try:
         judge_results = [run_judge(judge_model, conversation_text) for judge_model in judge_models]
         aggregate_report = run_aggregator(main_model, conversation_text, judge_results)
+        flagged_instances = aggregate_report.get("flagged_instances", [])
+        flagged_lines = []
+        for item in flagged_instances:
+            try:
+                message_index = int(item.get("message_index"))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= message_index < len(messages):
+                flagged_lines.append(
+                    {
+                        "message_id": messages[message_index].id,
+                        "message_index": message_index,
+                        "reason": item.get("category", "other"),
+                        "excerpt": item.get("excerpt", ""),
+                        "severity": item.get("severity"),
+                    }
+                )
+        aggregate_report["scores"] = {
+            "overall": aggregate_report.get("overall_score"),
+            "completion": aggregate_report.get("completion_score"),
+            "realistic": aggregate_report.get("realistic_score"),
+            "highest_severity": aggregate_report.get("highest_severity"),
+        }
+        aggregate_report["flagged_lines"] = flagged_lines
 
         evaluation_job.results = {"judges": judge_results}
         evaluation_job.report = aggregate_report

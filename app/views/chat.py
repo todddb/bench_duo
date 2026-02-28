@@ -172,6 +172,49 @@ def handle_start_chat(data: dict[str, Any] | None) -> tuple[dict[str, Any], int]
     return {"conversation_id": conversation.id}
 
 
+
+
+@chat_bp.get("/conversations")
+def list_conversations() -> Any:
+    conversations = Conversation.query.order_by(Conversation.id.desc()).all()
+    data = []
+    for conversation in conversations:
+        data.append(
+            {
+                "id": conversation.id,
+                "status": conversation.status,
+                "agent1_id": conversation.agent1_id,
+                "agent2_id": conversation.agent2_id,
+                "ttl": conversation.ttl,
+                "created_at": conversation.created_at.isoformat(),
+                "finished_at": conversation.finished_at.isoformat() if conversation.finished_at else None,
+            }
+        )
+    return jsonify({"success": True, "data": data})
+
+
+@chat_bp.get("/conversations/<int:conversation_id>/messages")
+def list_conversation_messages(conversation_id: int) -> Any:
+    conversation = db.session.get(Conversation, conversation_id)
+    if conversation is None:
+        return jsonify({"success": False, "error": "Conversation not found"}), 404
+
+    messages = (
+        Message.query.filter_by(conversation_id=conversation_id)
+        .order_by(Message.created_at.asc(), Message.id.asc())
+        .all()
+    )
+    data = [
+        {
+            "id": message.id,
+            "sender_role": message.sender_role,
+            "agent_id": message.agent_id,
+            "content": message.content,
+            "created_at": message.created_at.isoformat(),
+        }
+        for message in messages
+    ]
+    return jsonify({"success": True, "data": data})
 @chat_bp.get("/conversations/<int:conversation_id>")
 def get_conversation(conversation_id: int) -> Any:
     conversation = db.session.get(Conversation, conversation_id)

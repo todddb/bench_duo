@@ -7,6 +7,8 @@ from .views.health import health_bp
 from .views.setup import setup_bp
 from .views.chat import chat_bp, init_chat_worker
 from .views.evaluate import evaluate_bp
+from .views.batch import batch_bp, init_batch_worker
+from .views.pages import pages_bp
 
 
 def create_app(config_class: type[Config] = Config) -> Flask:
@@ -20,11 +22,10 @@ def create_app(config_class: type[Config] = Config) -> Flask:
     app.register_blueprint(setup_bp)
     app.register_blueprint(chat_bp)
     app.register_blueprint(evaluate_bp)
+    app.register_blueprint(batch_bp)
+    app.register_blueprint(pages_bp)
 
     init_chat_worker(app)
-
-    @app.get("/")
-    def index() -> dict[str, str]:
-        return {"name": "bench_duo", "status": "ok"}
+    init_batch_worker(app)
 
     return app
