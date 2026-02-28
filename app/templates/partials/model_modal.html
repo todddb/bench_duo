@@ -1,0 +1,13 @@
+<div class="modal" tabindex="-1" id="model-modal">
+  <div class="modal-dialog"><div class="modal-content">
+    <div class="modal-header"><h5 class="modal-title">Model</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <form id="model-form"><div class="modal-body">
+      <input type="hidden" id="model-id" />
+      <input class="form-control mb-2" id="model-name" placeholder="Name" required />
+      <input class="form-control mb-2" id="model-host" placeholder="Host" required />
+      <input class="form-control mb-2" id="model-port" type="number" placeholder="Port" required />
+      <select class="form-select mb-2" id="model-backend"><option>ollama</option><option>mlx</option><option>tensorrt_llm</option></select>
+      <input class="form-control" id="model-model-name" placeholder="Model name" required />
+    </div><div class="modal-footer"><button class="btn btn-primary" type="submit">Save</button></div></form>
+  </div></div>
+</div>
