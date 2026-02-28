@@ -89,5 +89,27 @@ class BatchApiTests(unittest.TestCase):
         self.assertEqual(cancel_call.status_code, 400)
 
 
+    @patch("app.views.batch._connector_for_agent", return_value=_FakeConnector())
+    def test_batch_export_supports_json_and_csv(self, _mock_connector) -> None:
+        created = self.client.post(
+            "/api/batch_jobs",
+            json={"agent1_id": 1, "agent2_id": 2, "prompt": "start", "ttl": 1, "num_runs": 2, "seed": 7},
+        )
+        self.assertEqual(created.status_code, 201)
+        batch_id = created.get_json()["data"]["batch_id"]
+
+        json_export = self.client.get(f"/api/batch_jobs/{batch_id}/export")
+        self.assertEqual(json_export.status_code, 200)
+        payload = json_export.get_json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["data"]["id"], batch_id)
+        self.assertEqual(len(payload["data"]["conversations"]), 2)
+
+        csv_export = self.client.get(f"/api/batch_jobs/{batch_id}/export?format=csv")
+        self.assertEqual(csv_export.status_code, 200)
+        self.assertEqual(csv_export.mimetype, "text/csv")
+        self.assertIn("batch_id,conversation_id", csv_export.get_data(as_text=True))
+
+
 if __name__ == "__main__":
     unittest.main()

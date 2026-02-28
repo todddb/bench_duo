@@ -11,7 +11,11 @@
   </div>
   <textarea id="batch-prompt" class="form-control mb-2" rows="2" placeholder="Scenario prompt"></textarea>
   <div class="progress mb-3"><div id="batch-progress" class="progress-bar" style="width:0%">0%</div></div>
-  <div id="batch-stats" class="small text-muted mb-3"></div>
+  <div id="batch-stats" class="small text-muted mb-2"></div>
+  <div class="mb-3 d-flex gap-2">
+    <button id="export-batch-json" class="btn btn-sm btn-outline-secondary" disabled>Export Batch JSON</button>
+    <button id="export-batch-csv" class="btn btn-sm btn-outline-secondary" disabled>Export Batch CSV</button>
+  </div>
   <table class="table table-sm" id="batch-table"><thead><tr><th>ID</th><th>Agents</th><th>Date</th><th>Prompt</th><th>Total Runs</th><th>Time Elapsed</th><th>Avg Speed</th><th>Status</th></tr></thead><tbody></tbody></table>
 </div>
 {% endblock %}

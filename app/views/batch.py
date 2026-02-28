@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime
+import csv
+import io
+from datetime import datetime, timedelta
 from queue import Queue
 from threading import Lock, Thread
 from time import perf_counter
 from typing import Any
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, Response, current_app, jsonify, request
 
 from app.connectors import Connector, MLXConnector, OllamaConnector, TensorRTConnector
 from app.extensions import db
 from app.models import Agent, BatchJob, Conversation, Message
+from app.security import sanitize_text_input
 
 batch_bp = Blueprint("batch", __name__, url_prefix="/api")
 
@@ -142,8 +145,8 @@ def _process_batch(app, batch_id: int) -> None:
                 batch = db.session.get(BatchJob, batch_id)
                 if batch is None:
                     return
-                summary = batch.summary or {}
-                conversation_ids = summary.get("conversation_ids", [])
+                summary = dict(batch.summary or {})
+                conversation_ids = list(summary.get("conversation_ids", []))
                 conversation_ids.append(run_summary["id"])
                 summary["conversation_ids"] = conversation_ids
                 summary["total_messages"] = int(summary.get("total_messages", 0)) + run_summary["messages"]
@@ -197,8 +200,9 @@ def _create_batch_job(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
         ttl = max(1, int(payload["ttl"]))
         num_runs = max(1, int(payload["num_runs"]))
         seed = int(payload["seed"]) if payload.get("seed") is not None else None
-    except (TypeError, ValueError):
-        return {"success": False, "error": "agent1_id, agent2_id, ttl, num_runs and seed must be integers"}, 400
+        prompt = sanitize_text_input(payload["prompt"], "prompt", max_length=12000)
+    except (TypeError, ValueError) as exc:
+        return {"success": False, "error": str(exc)}, 400
 
     agent1 = db.session.get(Agent, agent1_id)
     agent2 = db.session.get(Agent, agent2_id)
@@ -208,7 +212,7 @@ def _create_batch_job(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
     batch = BatchJob(
         agent1_id=agent1_id,
         agent2_id=agent2_id,
-        prompt=str(payload["prompt"]),
+        prompt=prompt,
         ttl=ttl,
         num_runs=num_runs,
         seed=seed,
@@ -240,6 +244,22 @@ def create_batch() -> Any:
     payload = request.get_json(silent=True) or {}
     response, status = _create_batch_job(payload)
     return jsonify(response), status
+
+
+@batch_bp.post("/batch_jobs/purge")
+def purge_batch_jobs() -> Any:
+    payload = request.get_json(silent=True) or {}
+    try:
+        older_than_days = int(payload.get("older_than_days", 30))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "older_than_days must be an integer"}), 400
+    if older_than_days < 0:
+        return jsonify({"success": False, "error": "older_than_days must be >= 0"}), 400
+
+    cutoff = datetime.utcnow() - timedelta(days=older_than_days)
+    deleted = BatchJob.query.filter(BatchJob.created_at < cutoff).delete(synchronize_session=False)
+    db.session.commit()
+    return jsonify({"success": True, "data": {"deleted": deleted, "older_than_days": older_than_days}})
 
 
 @batch_bp.post("/batch_jobs/<int:batch_id>/cancel")
@@ -327,6 +347,92 @@ def get_batch_job(batch_id: int) -> Any:
             },
         }
     )
+
+
+@batch_bp.get("/batch_jobs/<int:batch_id>/export")
+def export_batch_job(batch_id: int) -> Any:
+    batch = db.session.get(BatchJob, batch_id)
+    if batch is None:
+        return jsonify({"success": False, "error": "Batch job not found"}), 404
+
+    format_name = (request.args.get("format") or "json").lower()
+    summary = batch.summary or {}
+    conversation_ids = summary.get("conversation_ids", [])
+    conversations = []
+
+    for conversation_id in conversation_ids:
+        conversation = db.session.get(Conversation, int(conversation_id))
+        if conversation is None:
+            continue
+        messages = (
+            Message.query.filter_by(conversation_id=conversation.id)
+            .order_by(Message.created_at.asc(), Message.id.asc())
+            .all()
+        )
+        conversations.append(
+            {
+                "conversation_id": conversation.id,
+                "status": conversation.status,
+                "messages": [
+                    {
+                        "id": message.id,
+                        "sender_role": message.sender_role,
+                        "agent_id": message.agent_id,
+                        "content": message.content,
+                        "tokens": message.tokens,
+                        "created_at": message.created_at.isoformat(),
+                    }
+                    for message in messages
+                ],
+            }
+        )
+
+    payload = {
+        "id": batch.id,
+        "status": batch.status,
+        "agent1_id": batch.agent1_id,
+        "agent2_id": batch.agent2_id,
+        "prompt": batch.prompt,
+        "num_runs": batch.num_runs,
+        "completed_runs": batch.completed_runs,
+        "ttl": batch.ttl,
+        "seed": batch.seed,
+        "created_at": batch.created_at.isoformat() if batch.created_at else None,
+        "summary": batch.summary or {},
+        "conversations": conversations,
+    }
+
+    if format_name == "csv":
+        output = io.StringIO()
+        writer = csv.DictWriter(
+            output,
+            fieldnames=["batch_id", "conversation_id", "message_id", "sender_role", "agent_id", "content", "tokens", "created_at"],
+        )
+        writer.writeheader()
+        for conv in conversations:
+            for msg in conv["messages"]:
+                writer.writerow(
+                    {
+                        "batch_id": batch.id,
+                        "conversation_id": conv["conversation_id"],
+                        "message_id": msg["id"],
+                        "sender_role": msg["sender_role"],
+                        "agent_id": msg["agent_id"],
+                        "content": msg["content"],
+                        "tokens": msg["tokens"],
+                        "created_at": msg["created_at"],
+                    }
+                )
+        return Response(
+            output.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=batch-{batch.id}.csv"},
+        )
+
+    if format_name != "json":
+        return jsonify({"success": False, "error": "format must be json or csv"}), 400
+
+    return jsonify({"success": True, "data": payload})
 
 
 @batch_bp.get("/batch/<int:batch_id>")

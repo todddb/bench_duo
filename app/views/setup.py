@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from app.connectors import Connector, ConnectorError, MLXConnector, OllamaConnector, TensorRTConnector
 from app.extensions import db
 from app.models import Agent, Model
+from app.security import sanitize_text_input, validate_host
 
 setup_bp = Blueprint("setup", __name__, url_prefix="/api")
 
@@ -87,15 +88,21 @@ def _validate_model_payload(payload: Any, required: set[str]) -> ValidationResul
     for key in ["name", "host", "backend", "model_name"]:
         if key in payload:
             value = payload.get(key)
-            if not isinstance(value, str) or not value.strip():
-                return ValidationResult(ok=False, error=f"{key} must be a non-empty string")
-            data[key] = value.strip()
+            try:
+                data[key] = sanitize_text_input(value, key, max_length=255)
+            except ValueError as exc:
+                return ValidationResult(ok=False, error=str(exc))
+
+    if "host" in data and not validate_host(data["host"]):
+        return ValidationResult(ok=False, error="host contains invalid characters")
 
     if "port" in payload:
         try:
             data["port"] = int(payload["port"])
         except (TypeError, ValueError):
             return ValidationResult(ok=False, error="port must be an integer")
+        if not 1 <= data["port"] <= 65535:
+            return ValidationResult(ok=False, error="port must be between 1 and 65535")
 
     return ValidationResult(ok=True, data=data)
 
@@ -112,9 +119,10 @@ def _validate_agent_payload(payload: Any, required: set[str]) -> ValidationResul
 
     if "name" in payload:
         name = payload.get("name")
-        if not isinstance(name, str) or not name.strip():
-            return ValidationResult(ok=False, error="name must be a non-empty string")
-        data["name"] = name.strip()
+        try:
+            data["name"] = sanitize_text_input(name, "name", max_length=255)
+        except ValueError as exc:
+            return ValidationResult(ok=False, error=str(exc))
 
     if "model_id" in payload:
         try:
@@ -128,21 +136,26 @@ def _validate_agent_payload(payload: Any, required: set[str]) -> ValidationResul
 
     if "system_prompt" in payload:
         prompt = payload.get("system_prompt")
-        if not isinstance(prompt, str) or not prompt.strip():
-            return ValidationResult(ok=False, error="system_prompt must be a non-empty string")
-        data["system_prompt"] = prompt
+        try:
+            data["system_prompt"] = sanitize_text_input(prompt, "system_prompt", max_length=12000)
+        except ValueError as exc:
+            return ValidationResult(ok=False, error=str(exc))
 
     if "max_tokens" in payload:
         try:
             data["max_tokens"] = int(payload.get("max_tokens"))
         except (TypeError, ValueError):
             return ValidationResult(ok=False, error="max_tokens must be an integer")
+        if data["max_tokens"] < 1:
+            return ValidationResult(ok=False, error="max_tokens must be greater than 0")
 
     if "temperature" in payload:
         try:
             data["temperature"] = float(payload.get("temperature"))
         except (TypeError, ValueError):
             return ValidationResult(ok=False, error="temperature must be a number")
+        if not 0 <= data["temperature"] <= 2:
+            return ValidationResult(ok=False, error="temperature must be between 0 and 2")
 
     return ValidationResult(ok=True, data=data)
 
