@@ -2,6 +2,7 @@ from flask import Flask
 
 from .config import Config
 from .extensions import db, socketio
+from . import models  # noqa: F401
 from .views.health import health_bp
 
 
