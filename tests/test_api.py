@@ -150,5 +150,77 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(messages[0]["sender_role"], "user")
 
 
+    def test_model_validation_rejects_invalid_host_and_port(self) -> None:
+        bad_host = self.client.post(
+            "/api/models",
+            json={
+                "name": "M2",
+                "host": "localhost/evil",
+                "port": 11434,
+                "backend": "ollama",
+                "model_name": "gemma3",
+            },
+        )
+        self.assertEqual(bad_host.status_code, 400)
+
+        bad_port = self.client.post(
+            "/api/models",
+            json={
+                "name": "M3",
+                "host": "localhost",
+                "port": 99999,
+                "backend": "ollama",
+                "model_name": "gemma3",
+            },
+        )
+        self.assertEqual(bad_port.status_code, 400)
+
+
+    @patch("app.views.chat._connector_for_agent")
+    def test_conversation_export_supports_json_and_csv(self, mock_connector_factory) -> None:
+        class _EchoConnector:
+            def chat(self, messages, settings):
+                return f"reply:{messages[-1]['content']}"
+
+        mock_connector_factory.return_value = _EchoConnector()
+
+        model_id = self.client.post(
+            "/api/models",
+            json={"name": "MExport", "host": "localhost", "port": 11434, "backend": "ollama", "model_name": "gemma3"},
+        ).get_json()["data"]["id"]
+        agent1 = self.client.post(
+            "/api/agents",
+            json={"name": "AExport1", "model_id": model_id, "system_prompt": "S1", "max_tokens": 64, "temperature": 0.1},
+        ).get_json()["data"]["id"]
+        agent2 = self.client.post(
+            "/api/agents",
+            json={"name": "AExport2", "model_id": model_id, "system_prompt": "S2", "max_tokens": 64, "temperature": 0.1},
+        ).get_json()["data"]["id"]
+
+        from app.extensions import socketio
+
+        sio_client = socketio.test_client(self.app, namespace="/")
+        ack = sio_client.emit(
+            "start_chat",
+            {"agent1_id": agent1, "agent2_id": agent2, "prompt": "hi", "ttl": 2, "seed": 7},
+            namespace="/",
+            callback=True,
+        )
+        conversation_id = ack["conversation_id"]
+        sio_client.disconnect(namespace="/")
+
+        json_export = self.client.get(f"/api/conversations/{conversation_id}/export")
+        self.assertEqual(json_export.status_code, 200)
+        payload = json_export.get_json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["data"]["id"], conversation_id)
+        self.assertEqual(len(payload["data"]["messages"]), 3)
+
+        csv_export = self.client.get(f"/api/conversations/{conversation_id}/export?format=csv")
+        self.assertEqual(csv_export.status_code, 200)
+        self.assertEqual(csv_export.mimetype, "text/csv")
+        self.assertIn("conversation_id,message_id", csv_export.get_data(as_text=True))
+
+
 if __name__ == "__main__":
     unittest.main()

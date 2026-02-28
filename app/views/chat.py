@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import csv
+import io
 from datetime import datetime
 from queue import Queue
 from threading import Lock, Thread
 from typing import Any
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, Response, current_app, jsonify, request
 from app.connectors import Connector, MLXConnector, OllamaConnector, TensorRTConnector
 from app.extensions import db, socketio
 from app.models import Agent, Conversation, Message
+from app.security import sanitize_text_input
 
 chat_bp = Blueprint("chat", __name__, url_prefix="/api")
 
@@ -134,17 +137,25 @@ def handle_start_chat(data: dict[str, Any] | None) -> tuple[dict[str, Any], int]
     if missing:
         return {"error": f"Missing required fields: {', '.join(missing)}"}, 400
 
-    agent1 = db.session.get(Agent, int(payload["agent1_id"]))
-    agent2 = db.session.get(Agent, int(payload["agent2_id"]))
+    try:
+        agent1_id = int(payload["agent1_id"])
+        agent2_id = int(payload["agent2_id"])
+        ttl = max(1, int(payload["ttl"]))
+        seed = int(payload["seed"])
+        prompt = sanitize_text_input(payload["prompt"], "prompt", max_length=12000)
+    except (TypeError, ValueError) as exc:
+        return {"error": str(exc)}, 400
+
+    agent1 = db.session.get(Agent, agent1_id)
+    agent2 = db.session.get(Agent, agent2_id)
     if agent1 is None or agent2 is None:
         return {"error": "agent1_id or agent2_id does not exist"}, 404
 
-    ttl = max(1, int(payload["ttl"]))
     conversation = Conversation(
         agent1_id=agent1.id,
         agent2_id=agent2.id,
         ttl=ttl,
-        random_seed=int(payload["seed"]),
+        random_seed=seed,
         status="running",
     )
     db.session.add(conversation)
@@ -153,14 +164,14 @@ def handle_start_chat(data: dict[str, Any] | None) -> tuple[dict[str, Any], int]
         Message(
             conversation_id=conversation.id,
             sender_role="user",
-            content=str(payload["prompt"]),
+            content=prompt,
         )
     )
     db.session.commit()
 
     task = {
         "conversation_id": conversation.id,
-        "prompt": str(payload["prompt"]),
+        "prompt": prompt,
         "sid": request.sid,
         "namespace": request.namespace,
     }
@@ -170,8 +181,6 @@ def handle_start_chat(data: dict[str, Any] | None) -> tuple[dict[str, Any], int]
         _chat_queue.put(task)
 
     return {"conversation_id": conversation.id}
-
-
 
 
 @chat_bp.get("/conversations")
@@ -215,6 +224,73 @@ def list_conversation_messages(conversation_id: int) -> Any:
         for message in messages
     ]
     return jsonify({"success": True, "data": data})
+
+
+@chat_bp.get("/conversations/<int:conversation_id>/export")
+def export_conversation(conversation_id: int) -> Any:
+    conversation = db.session.get(Conversation, conversation_id)
+    if conversation is None:
+        return jsonify({"success": False, "error": "Conversation not found"}), 404
+
+    format_name = (request.args.get("format") or "json").lower()
+    messages = (
+        Message.query.filter_by(conversation_id=conversation_id)
+        .order_by(Message.created_at.asc(), Message.id.asc())
+        .all()
+    )
+    payload = {
+        "id": conversation.id,
+        "status": conversation.status,
+        "agent1_id": conversation.agent1_id,
+        "agent2_id": conversation.agent2_id,
+        "ttl": conversation.ttl,
+        "random_seed": conversation.random_seed,
+        "created_at": conversation.created_at.isoformat(),
+        "finished_at": conversation.finished_at.isoformat() if conversation.finished_at else None,
+        "messages": [
+            {
+                "id": message.id,
+                "sender_role": message.sender_role,
+                "agent_id": message.agent_id,
+                "content": message.content,
+                "tokens": message.tokens,
+                "created_at": message.created_at.isoformat(),
+            }
+            for message in messages
+        ],
+    }
+
+    if format_name == "csv":
+        output = io.StringIO()
+        writer = csv.DictWriter(
+            output,
+            fieldnames=["conversation_id", "message_id", "sender_role", "agent_id", "content", "tokens", "created_at"],
+        )
+        writer.writeheader()
+        for msg in payload["messages"]:
+            writer.writerow(
+                {
+                    "conversation_id": conversation.id,
+                    "message_id": msg["id"],
+                    "sender_role": msg["sender_role"],
+                    "agent_id": msg["agent_id"],
+                    "content": msg["content"],
+                    "tokens": msg["tokens"],
+                    "created_at": msg["created_at"],
+                }
+            )
+        return Response(
+            output.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=conversation-{conversation.id}.csv"},
+        )
+
+    if format_name != "json":
+        return jsonify({"success": False, "error": "format must be json or csv"}), 400
+
+    return jsonify({"success": True, "data": payload})
+
+
 @chat_bp.get("/conversations/<int:conversation_id>")
 def get_conversation(conversation_id: int) -> Any:
     conversation = db.session.get(Conversation, conversation_id)

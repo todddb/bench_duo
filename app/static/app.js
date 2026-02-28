@@ -94,6 +94,7 @@ async function initChatPage() {
   const pane = byId('chat-pane');
   const socket = io('/');
   let typingEl = null;
+  let currentConversationId = null;
   const scrollDown = () => { pane.scrollTop = pane.scrollHeight; };
   const bubble = (sender, text) => `<div class="bubble ${sender}">${text}</div>`;
 
@@ -112,6 +113,9 @@ async function initChatPage() {
 
   byId('start-chat').onclick = () => {
     pane.innerHTML = '';
+    currentConversationId = null;
+    byId('export-conversation-json').disabled = true;
+    byId('export-conversation-csv').disabled = true;
     pane.insertAdjacentHTML('beforeend', bubble('user', byId('chat-prompt').value || 'Start.'));
     typingEl = document.createElement('div');
     typingEl.className = 'typing';
@@ -123,8 +127,21 @@ async function initChatPage() {
       prompt: byId('chat-prompt').value,
       ttl: Number(byId('chat-ttl').value),
       seed: Date.now(),
+    }, (ack) => {
+      if (ack?.conversation_id) {
+        currentConversationId = ack.conversation_id;
+        byId('export-conversation-json').disabled = false;
+        byId('export-conversation-csv').disabled = false;
+      }
     });
     scrollDown();
+  };
+
+  byId('export-conversation-json').onclick = () => {
+    if (currentConversationId) window.open(`/api/conversations/${currentConversationId}/export?format=json`, '_blank');
+  };
+  byId('export-conversation-csv').onclick = () => {
+    if (currentConversationId) window.open(`/api/conversations/${currentConversationId}/export?format=csv`, '_blank');
   };
 }
 
@@ -140,6 +157,8 @@ async function initBatchPage() {
   const renderBatch = (detail) => {
     const s = detail.summary || {};
     const pct = s.progress_pct || 0;
+    byId('export-batch-json').disabled = false;
+    byId('export-batch-csv').disabled = false;
     byId('batch-progress').style.width = `${pct}%`;
     byId('batch-progress').textContent = `${pct}%`;
     byId('batch-stats').textContent = `Completed ${s.completed || 0}/${s.total || detail.num_runs}; avg time: ${s.avg_time || 0}s; speed: ${s.tokens_per_sec || 0} tok/s`;
@@ -172,6 +191,8 @@ async function initBatchPage() {
   };
 
   byId('start-batch').onclick = async () => {
+    byId('export-batch-json').disabled = true;
+    byId('export-batch-csv').disabled = true;
     const created = await api('/api/batch_jobs', {
       method: 'POST',
       body: JSON.stringify({
@@ -194,6 +215,14 @@ async function initBatchPage() {
       await refreshActiveBatch();
       await renderHistory();
     }
+  };
+
+
+  byId('export-batch-json').onclick = () => {
+    if (activeBatchId) window.open(`/api/batch_jobs/${activeBatchId}/export?format=json`, '_blank');
+  };
+  byId('export-batch-csv').onclick = () => {
+    if (activeBatchId) window.open(`/api/batch_jobs/${activeBatchId}/export?format=csv`, '_blank');
   };
 
   const pollTimer = setInterval(async () => {
