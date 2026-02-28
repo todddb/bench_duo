@@ -136,26 +136,43 @@ async function initBatchPage() {
   byId('batch-agent2').innerHTML = options;
 
   let activeBatchId = null;
+
+  const renderBatch = (detail) => {
+    const s = detail.summary || {};
+    const pct = s.progress_pct || 0;
+    byId('batch-progress').style.width = `${pct}%`;
+    byId('batch-progress').textContent = `${pct}%`;
+    byId('batch-stats').textContent = `Completed ${s.completed || 0}/${s.total || detail.num_runs}; avg time: ${s.avg_time || 0}s; speed: ${s.tokens_per_sec || 0} tok/s`;
+  };
+
+  const refreshActiveBatch = async () => {
+    if (!activeBatchId) return;
+    const detail = await api(`/api/batch_jobs/${activeBatchId}`);
+    renderBatch(detail);
+    if (!['queued', 'running'].includes(detail.status)) {
+      activeBatchId = null;
+      clearInterval(pollTimer);
+    }
+  };
+
   const renderHistory = async () => {
-    const jobs = await api('/api/batch');
+    const jobs = await api('/api/batch_jobs');
     byId('batch-table').querySelector('tbody').innerHTML = jobs.map((j) => {
-      const avg = j.summary?.avg_tokens_per_sec ?? 0;
-      return `<tr data-id="${j.id}" class="batch-row"><td>${j.id}</td><td>${j.agent1_id}/${j.agent2_id}</td><td>${j.prompt.slice(0, 40)}</td><td>${j.num_runs}</td><td>${j.total_time_seconds || '-'}</td><td>${avg}</td><td>${j.status}</td></tr>`;
+      const avg = j.summary?.tokens_per_sec ?? 0;
+      const date = j.created_at ? new Date(j.created_at).toLocaleString() : '-';
+      return `<tr data-id="${j.id}" class="batch-row"><td>${j.id}</td><td>${j.agent1_name}/${j.agent2_name}</td><td>${date}</td><td>${j.prompt_snippet}</td><td>${j.num_runs}</td><td>${j.elapsed_seconds || 0}</td><td>${avg}</td><td>${j.status}</td></tr>`;
     }).join('');
     document.querySelectorAll('.batch-row').forEach((row) => {
       row.onclick = async () => {
-        const detail = await api(`/api/batch/${row.dataset.id}`);
-        const s = detail.summary || {};
-        const pct = s.progress_pct || 0;
-        byId('batch-progress').style.width = `${pct}%`;
-        byId('batch-progress').textContent = `${pct}%`;
-        byId('batch-stats').textContent = `Completed ${s.completed_runs || 0}/${s.total_runs || detail.num_runs}, messages: ${s.total_messages || 0}`;
+        activeBatchId = Number(row.dataset.id);
+        const detail = await api(`/api/batch_jobs/${activeBatchId}`);
+        renderBatch(detail);
       };
     });
   };
 
   byId('start-batch').onclick = async () => {
-    const created = await api('/api/batch', {
+    const created = await api('/api/batch_jobs', {
       method: 'POST',
       body: JSON.stringify({
         agent1_id: Number(byId('batch-agent1').value),
@@ -163,17 +180,27 @@ async function initBatchPage() {
         ttl: Number(byId('batch-ttl').value),
         num_runs: Number(byId('batch-runs').value),
         prompt: byId('batch-prompt').value,
+        seed: Date.now(),
       }),
     });
     activeBatchId = created.batch_id;
     await renderHistory();
-    const detail = await api(`/api/batch/${activeBatchId}`);
-    const pct = detail.summary?.progress_pct || 0;
-    byId('batch-progress').style.width = `${pct}%`;
-    byId('batch-progress').textContent = `${pct}%`;
+    await refreshActiveBatch();
   };
 
-  byId('stop-batch').onclick = async () => { if (activeBatchId) { await api(`/api/batch/${activeBatchId}/stop`, { method: 'POST' }); await renderHistory(); } };
+  byId('stop-batch').onclick = async () => {
+    if (activeBatchId) {
+      await api(`/api/batch_jobs/${activeBatchId}/cancel`, { method: 'POST' });
+      await refreshActiveBatch();
+      await renderHistory();
+    }
+  };
+
+  const pollTimer = setInterval(async () => {
+    await renderHistory();
+    await refreshActiveBatch();
+  }, 1500);
+
   await renderHistory();
 }
 

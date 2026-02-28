@@ -92,9 +92,12 @@ class BatchJob(BaseModel):
     prompt = db.Column(db.Text, nullable=False)
     num_runs = db.Column(db.Integer, nullable=False, default=1)
     ttl = db.Column(db.Integer, nullable=False, default=10)
+    seed = db.Column(db.Integer, nullable=True)
     start_time = db.Column(db.DateTime, nullable=True)
     end_time = db.Column(db.DateTime, nullable=True)
-    status = db.Column(db.String(32), nullable=False, default="pending")
+    status = db.Column(db.String(32), nullable=False, default="queued")
+    completed_runs = db.Column(db.Integer, nullable=False, default=0)
+    cancel_requested = db.Column(db.Boolean, nullable=False, default=False)
     summary = db.Column(db.JSON, nullable=True)
 
     agent1 = db.relationship("Agent", foreign_keys=[agent1_id])

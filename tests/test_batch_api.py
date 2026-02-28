@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from app import create_app
 from app.extensions import db
-from app.models import Agent, BatchJob, Model
+from app.models import Agent, BatchJob, Conversation, Model
 
 
 class TestConfig:
@@ -40,24 +40,53 @@ class BatchApiTests(unittest.TestCase):
         self.ctx.pop()
 
     @patch("app.views.batch._connector_for_agent", return_value=_FakeConnector())
-    def test_batch_lifecycle(self, _mock_connector) -> None:
+    def test_batch_jobs_processes_all_runs(self, _mock_connector) -> None:
         created = self.client.post(
-            "/api/batch",
-            json={"agent1_id": 1, "agent2_id": 2, "prompt": "start", "ttl": 2, "num_runs": 2},
+            "/api/batch_jobs",
+            json={"agent1_id": 1, "agent2_id": 2, "prompt": "start", "ttl": 1, "num_runs": 100, "seed": 7},
         )
         self.assertEqual(created.status_code, 201)
         batch_id = created.get_json()["data"]["batch_id"]
 
-        detail = self.client.get(f"/api/batch/{batch_id}")
+        detail = self.client.get(f"/api/batch_jobs/{batch_id}")
         self.assertEqual(detail.status_code, 200)
-        self.assertEqual(detail.get_json()["data"]["status"], "completed")
+        payload = detail.get_json()["data"]
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["completed_runs"], 100)
+        self.assertEqual(payload["summary"]["completed"], 100)
+        self.assertEqual(Conversation.query.count(), 100)
 
-        listed = self.client.get("/api/batch")
-        self.assertEqual(listed.status_code, 200)
-        self.assertEqual(len(listed.get_json()["data"]), 1)
+    @patch("app.views.batch._connector_for_agent", return_value=_FakeConnector())
+    def test_cancel_mid_run_stops_future_iterations(self, _mock_connector) -> None:
+        from app.views import batch as batch_view
 
+        real_run_single = batch_view._run_single_conversation
+        call_count = {"n": 0}
+
+        def wrapped_run_single_conversation(job, run_seed):
+            result = real_run_single(job, run_seed)
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                current = db.session.get(BatchJob, job.id)
+                current.cancel_requested = True
+                db.session.commit()
+            return result
+
+        with patch("app.views.batch._run_single_conversation", side_effect=wrapped_run_single_conversation):
+            created = self.client.post(
+                "/api/batch_jobs",
+                json={"agent1_id": 1, "agent2_id": 2, "prompt": "start", "ttl": 1, "num_runs": 10, "seed": 5},
+            )
+
+        self.assertEqual(created.status_code, 201)
+        batch_id = created.get_json()["data"]["batch_id"]
         saved = db.session.get(BatchJob, batch_id)
-        self.assertIsNotNone(saved.summary)
+        self.assertEqual(saved.status, "cancelled")
+        self.assertEqual(saved.completed_runs, 1)
+        self.assertLess(saved.completed_runs, saved.num_runs)
+
+        cancel_call = self.client.post(f"/api/batch_jobs/{batch_id}/cancel")
+        self.assertEqual(cancel_call.status_code, 400)
 
 
 if __name__ == "__main__":

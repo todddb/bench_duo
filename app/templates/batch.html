@@ -7,11 +7,11 @@
     <div class="col-md-2"><input id="batch-ttl" class="form-control" type="number" value="4" min="1" placeholder="TTL" /></div>
     <div class="col-md-2"><input id="batch-runs" class="form-control" type="number" value="2" min="1" placeholder="Num Conversations" /></div>
     <div class="col-md-2"><button id="start-batch" class="btn btn-primary w-100">Start Batch</button></div>
-    <div class="col-md-2"><button id="stop-batch" class="btn btn-outline-danger w-100">Stop</button></div>
+    <div class="col-md-2"><button id="stop-batch" class="btn btn-outline-danger w-100">Cancel</button></div>
   </div>
   <textarea id="batch-prompt" class="form-control mb-2" rows="2" placeholder="Scenario prompt"></textarea>
   <div class="progress mb-3"><div id="batch-progress" class="progress-bar" style="width:0%">0%</div></div>
   <div id="batch-stats" class="small text-muted mb-3"></div>
-  <table class="table table-sm" id="batch-table"><thead><tr><th>ID</th><th>Agents</th><th>Prompt</th><th>Runs</th><th>Total Time</th><th>Avg tok/s</th><th>Status</th></tr></thead><tbody></tbody></table>
+  <table class="table table-sm" id="batch-table"><thead><tr><th>ID</th><th>Agents</th><th>Date</th><th>Prompt</th><th>Total Runs</th><th>Time Elapsed</th><th>Avg Speed</th><th>Status</th></tr></thead><tbody></tbody></table>
 </div>
 {% endblock %}
