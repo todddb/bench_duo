@@ -6,6 +6,7 @@ from . import models  # noqa: F401
 from .views.health import health_bp
 from .views.setup import setup_bp
 from .views.chat import chat_bp, init_chat_worker
+from .views.evaluate import evaluate_bp
 
 
 def create_app(config_class: type[Config] = Config) -> Flask:
@@ -18,6 +19,7 @@ def create_app(config_class: type[Config] = Config) -> Flask:
     app.register_blueprint(health_bp)
     app.register_blueprint(setup_bp)
     app.register_blueprint(chat_bp)
+    app.register_blueprint(evaluate_bp)
 
     init_chat_worker(app)
 

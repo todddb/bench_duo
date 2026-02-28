@@ -104,7 +104,7 @@ class ModelRelationshipTests(unittest.TestCase):
             main_model_id=primary_model.id,
             judge_model_ids=[judge_model.id],
             results={"toxicity": 0},
-            report="No issues found",
+            report={"summary": "No issues found"},
             status="done",
         )
         connector_log = ConnectorLog(

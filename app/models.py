@@ -110,7 +110,7 @@ class EvaluationJob(BaseModel):
     main_model_id = db.Column(db.Integer, db.ForeignKey("models.id"), nullable=False)
     judge_model_ids = db.Column(db.JSON, nullable=False, default=list)
     results = db.Column(db.JSON, nullable=True)
-    report = db.Column(db.Text, nullable=True)
+    report = db.Column(db.JSON, nullable=True)
     status = db.Column(db.String(32), nullable=False, default="pending")
 
     conversation = db.relationship("Conversation", back_populates="evaluation_jobs")
