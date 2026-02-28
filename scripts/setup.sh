@@ -1,76 +1,64 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -e
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENV_DIR="${ROOT_DIR}/.venv"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
-SKIP_SYSTEM_DEPS="${SKIP_SYSTEM_DEPS:-0}"
-RUN_SMOKE_TESTS="${RUN_SMOKE_TESTS:-1}"
+echo "===== AI Duo Setup ====="
 
-run_privileged() {
-  if [[ "$(id -u)" -eq 0 ]]; then
-    "$@"
-  else
-    sudo "$@"
-  fi
-}
+# Detect OS
+OS_TYPE="$(uname)"
+echo "Detected OS: $OS_TYPE"
 
-install_system_deps() {
-  if [[ "${SKIP_SYSTEM_DEPS}" == "1" ]]; then
-    echo "Skipping system dependency installation (SKIP_SYSTEM_DEPS=1)."
-    return
-  fi
+if [[ "$OS_TYPE" == "Darwin" ]]; then
+    echo "Installing system dependencies via Homebrew..."
+    brew install sqlite openssl readline pkgconf || true
+elif [[ "$OS_TYPE" == "Linux" ]]; then
+    echo "Installing system dependencies via apt..."
+    sudo apt-get update
+    sudo apt-get install -y sqlite3 build-essential libssl-dev libffi-dev python3.11 python3.11-venv
+else
+    echo "Unsupported OS"
+    exit 1
+fi
 
-  if [[ "${OSTYPE:-}" == darwin* ]]; then
-    echo "Detected macOS. Installing system dependencies with Homebrew..."
-    command -v brew >/dev/null 2>&1 || {
-      echo "Homebrew is required but not found. Please install Homebrew first." >&2
-      exit 1
-    }
-    brew update
-    brew install sqlite openssl readline pkg-config
-  else
-    echo "Detected Linux. Installing system dependencies with apt-get..."
-    command -v apt-get >/dev/null 2>&1 || {
-      echo "apt-get not found. Please install dependencies manually." >&2
-      exit 1
-    }
-    run_privileged apt-get update
-    run_privileged apt-get install -y sqlite3 build-essential libssl-dev libffi-dev python3-dev python3-venv
-  fi
-}
+# Prefer python3.11
+if command -v python3.11 >/dev/null 2>&1; then
+    PYTHON_BIN=python3.11
+else
+    PYTHON_BIN=python3
+fi
 
-create_venv() {
-  if [[ ! -d "${VENV_DIR}" ]]; then
-    "${PYTHON_BIN}" -m venv "${VENV_DIR}"
-  fi
+PY_VERSION=$($PYTHON_BIN -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+echo "Using Python $PY_VERSION"
 
-  # shellcheck disable=SC1091
-  source "${VENV_DIR}/bin/activate"
+# Reject unsupported versions
+$PYTHON_BIN - <<EOF2
+import sys
+if sys.version_info >= (3,14):
+    print("ERROR: Python 3.14+ is not supported yet.")
+    sys.exit(1)
+EOF2
 
-  python -m pip install --upgrade pip
-  pip install -r "${ROOT_DIR}/requirements.txt"
-}
+# Create venv
+$PYTHON_BIN -m venv .venv
+source .venv/bin/activate
 
-init_db() {
-  # shellcheck disable=SC1091
-  source "${VENV_DIR}/bin/activate"
-  python "${ROOT_DIR}/scripts/init_db.py"
-}
+# Avoid building Rust wheels
+export PIP_ONLY_BINARY=:all:
 
-main() {
-  install_system_deps
-  create_venv
-  init_db
+pip install --upgrade pip
 
-  if [[ "${RUN_SMOKE_TESTS}" == "1" ]]; then
-    "${ROOT_DIR}/scripts/smoke_test.sh"
-  fi
+pip install -r requirements.txt
 
-  echo ""
-  echo "Setup complete."
-  echo "Activate virtualenv: source ${VENV_DIR}/bin/activate"
-  echo "Run app: python ${ROOT_DIR}/run.py"
-}
+echo "Initializing database..."
+python - <<EOF2
+from app import create_app
+from app.extensions import db
+app = create_app()
+with app.app_context():
+    db.create_all()
+print("Database initialized.")
+EOF2
 
-main "$@"
+echo ""
+echo "===== Setup Complete ====="
+echo "Activate with: source .venv/bin/activate"
+echo "Run with: python run.py"
