@@ -3,4 +3,4 @@ from flask_sqlalchemy import SQLAlchemy
 
 
 db = SQLAlchemy()
-socketio = SocketIO(async_mode="eventlet")
+socketio = SocketIO(async_mode="threading")
