@@ -10,6 +10,36 @@ source .venv/bin/activate
 python run.py
 ```
 
+## Installer behavior
+
+`scripts/setup.sh` now performs:
+
+1. OS detection (`$OSTYPE`) for Linux/macOS package installation.
+2. System dependency installation (`apt-get` on Linux, `brew` on macOS).
+3. Virtual environment creation and `pip install -r requirements.txt`.
+4. SQLite database initialization (`scripts/init_db.py`).
+5. Smoke tests (`scripts/smoke_test.sh`) to verify toolchain and app startup imports.
+
+Optional flags:
+
+- `SKIP_SYSTEM_DEPS=1 ./scripts/setup.sh` to skip `apt-get`/`brew`.
+- `RUN_SMOKE_TESTS=0 ./scripts/setup.sh` to skip post-install smoke tests.
+
+## Smoke-test commands
+
+Run manually after setup:
+
+```bash
+./scripts/smoke_test.sh
+```
+
+The smoke test validates:
+
+- `sqlite3 --version`
+- `python -c "import flask, sqlalchemy"`
+- `python scripts/init_db.py`
+- `python -c "from app import create_app; create_app()"`
+
 ## Export endpoints
 
 - Conversation export: `GET /api/conversations/<id>/export`
