@@ -14,11 +14,25 @@ start_app() {
     mkdir -p "$APP_HOME/run" "$APP_HOME/logs"
     cd "$APP_HOME" || exit 1
     # Activate virtual environment and start app on port 5050
+    if [ ! -f ".venv/bin/activate" ]; then
+        echo "Virtual environment not found. Run ./scripts/setup.sh first."
+        exit 1
+    fi
     . .venv/bin/activate
     PORT=5050 nohup python run.py >>"$LOG_FILE" 2>&1 &
     PID=$!
     echo "$PID" > "$PID_FILE"
     echo "Started bench_duo (PID $PID), logging to $LOG_FILE"
+
+    detected_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    if [ -z "$detected_ip" ] && command -v ipconfig >/dev/null 2>&1; then
+        detected_ip=$(ipconfig getifaddr en0 2>/dev/null || true)
+        [ -z "$detected_ip" ] && detected_ip=$(ipconfig getifaddr en1 2>/dev/null || true)
+    fi
+    [ -z "$detected_ip" ] && detected_ip="0.0.0.0"
+
+    echo "Please connect to ${detected_ip}:5050"
+    echo "or 127.0.0.1:5050"
 }
 
 stop_app() {

@@ -61,4 +61,6 @@ EOF2
 echo ""
 echo "===== Setup Complete ====="
 echo "Activate with: source .venv/bin/activate"
-echo "Run with: python run.py"
+echo "Start app with: ./scripts/duo start"
+echo "Stop app with: ./scripts/duo stop"
+echo "Check logs: tail -n 100 ./logs/bench_duo.log"
