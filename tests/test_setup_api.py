@@ -40,6 +40,7 @@ class SetupApiTests(unittest.TestCase):
                 "port": 11434,
                 "backend": "ollama",
                 "model_name": "gemma3",
+                "selected_model": "gemma3",
             },
         )
 
@@ -50,6 +51,7 @@ class SetupApiTests(unittest.TestCase):
 
         saved = Model.query.filter_by(name="GPU1").one()
         self.assertEqual(saved.status, "green")
+        self.assertEqual(saved.selected_model, "gemma3")
 
     def test_post_model_invalid_payload_returns_400(self) -> None:
         response = self.client.post(
@@ -75,6 +77,7 @@ class SetupApiTests(unittest.TestCase):
                 "port": 11434,
                 "backend": "ollama",
                 "model_name": "gemma3",
+                "selected_model": "gemma3",
             },
         )
 
@@ -84,6 +87,34 @@ class SetupApiTests(unittest.TestCase):
 
         saved = Model.query.filter_by(name="GPU2").one()
         self.assertEqual(saved.status, "red")
+
+
+    @patch("app.views.setup.detect_backend")
+    def test_post_models_test_detects_backend_and_models(self, mock_detect_backend) -> None:
+        mock_detect_backend.return_value = {
+            "backend": "mlx",
+            "version": "0.12.1",
+            "models": ["llama3-8b-q4", "phi-2"],
+        }
+
+        response = self.client.post("/api/models/test", json={"host": "127.0.0.1", "port": 9001})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["data"]["backend"], "mlx")
+        self.assertEqual(payload["data"]["models"], ["llama3-8b-q4", "phi-2"])
+
+    @patch("app.views.setup.detect_backend")
+    def test_post_models_test_unknown_backend_returns_400(self, mock_detect_backend) -> None:
+        mock_detect_backend.return_value = None
+
+        response = self.client.post("/api/models/test", json={"host": "127.0.0.1", "port": 9001})
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["error"], "Unable to detect backend")
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 import requests
 
 from app.connectors.base import Connector, ConnectorError
+from app.connectors.detector import detect_backend
 from app.connectors.mlx import MLXConnector
 from app.connectors.ollama import OllamaConnector
 from app.connectors.tensorrt_llm import TensorRTConnector
@@ -101,6 +102,28 @@ class MLXConnectorTests(unittest.TestCase):
         )
 
         self.assertEqual(out, "mlx answer")
+
+
+class BackendDetectorTests(unittest.TestCase):
+    @patch("app.connectors.detector.requests.get")
+    def test_detect_backend_prefers_ollama(self, mock_get: MagicMock) -> None:
+        ollama_response = MagicMock()
+        ollama_response.status_code = 200
+        ollama_response.json.return_value = {"models": [{"name": "llama3"}, {"name": "mistral"}]}
+        mock_get.return_value = ollama_response
+
+        result = detect_backend("127.0.0.1", 9001)
+
+        self.assertEqual(result["backend"], "ollama")
+        self.assertEqual(result["models"], ["llama3", "mistral"])
+
+    @patch("app.connectors.detector.requests.get")
+    def test_detect_backend_returns_none_when_unreachable(self, mock_get: MagicMock) -> None:
+        mock_get.side_effect = requests.RequestException("Connection refused")
+
+        result = detect_backend("127.0.0.1", 9001)
+
+        self.assertIsNone(result)
 
 
 class TensorRTConnectorTests(unittest.TestCase):

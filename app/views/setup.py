@@ -7,6 +7,8 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy.exc import IntegrityError
 
 from app.connectors import Connector, ConnectorError, MLXConnector, OllamaConnector, TensorRTConnector
+from app.connectors.detector import detect_backend
+import requests
 from app.extensions import db
 from app.models import Agent, Model
 from app.security import sanitize_text_input, validate_host
@@ -29,6 +31,7 @@ def _model_to_dict(model: Model) -> dict[str, Any]:
         "port": model.port,
         "backend": model.backend,
         "model_name": model.model_name,
+        "selected_model": model.selected_model,
         "status": model.status,
     }
 
@@ -85,7 +88,7 @@ def _validate_model_payload(payload: Any, required: set[str]) -> ValidationResul
         return ValidationResult(ok=False, error=f"Missing required fields: {', '.join(missing)}")
 
     data: dict[str, Any] = {}
-    for key in ["name", "host", "backend", "model_name"]:
+    for key in ["name", "host", "backend", "model_name", "selected_model"]:
         if key in payload:
             value = payload.get(key)
             try:
@@ -232,6 +235,48 @@ def probe_models() -> Any:
     models = Model.query.order_by(Model.id.asc()).all()
     return jsonify({"success": True, "data": [_model_to_dict(model) for model in models]})
 
+
+
+
+@setup_bp.post("/models/test")
+def test_model_backend() -> Any:
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"success": False, "error": "Invalid JSON payload"}), 400
+
+    host_raw = payload.get("host")
+    try:
+        host = sanitize_text_input(host_raw, "host", max_length=255)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    if not validate_host(host):
+        return jsonify({"success": False, "error": "host contains invalid characters"}), 400
+
+    try:
+        port = int(payload.get("port", 9001))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "port must be an integer"}), 400
+
+    if not 1 <= port <= 65535:
+        return jsonify({"success": False, "error": "port must be between 1 and 65535"}), 400
+
+    try:
+        result = detect_backend(host, port)
+    except requests.RequestException as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    if not result:
+        return jsonify({"success": False, "error": "Unable to detect backend"}), 400
+
+    return jsonify({
+        "success": True,
+        "data": {
+            "backend": result["backend"],
+            "backend_version": result.get("version"),
+            "models": result.get("models", []),
+        },
+    })
 
 @setup_bp.get("/agents")
 def get_agents() -> Any:
