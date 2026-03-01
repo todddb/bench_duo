@@ -9,6 +9,11 @@ from app import create_app
 from app.extensions import db
 
 
+def _sqlite_tables(connection) -> set[str]:
+    rows = connection.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table'")
+    return {row[0] for row in rows}
+
+
 def _sqlite_columns(connection, table_name: str) -> set[str]:
     rows = connection.exec_driver_sql(f"PRAGMA table_info({table_name})")
     return {row[1] for row in rows}
@@ -22,11 +27,34 @@ def _apply_sqlite_compat_migrations() -> None:
             ("selected_model", "TEXT"),
             ("warm_status", "TEXT NOT NULL DEFAULT 'cold'"),
             ("last_warmed_at", "DATETIME"),
+            ("last_load_attempt_at", "DATETIME"),
+            ("last_load_message", "TEXT"),
+            ("last_engine_check_at", "DATETIME"),
+            ("last_engine_message", "TEXT"),
+        ],
+        "conversations": [
+            ("random_seed", "INTEGER"),
+            ("status", "TEXT NOT NULL DEFAULT 'pending'"),
+        ],
+        "messages": [
+            ("raw_response", "JSON"),
+        ],
+        "batch_jobs": [
+            ("completed_runs", "INTEGER NOT NULL DEFAULT 0"),
+            ("cancel_requested", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("summary", "JSON"),
+        ],
+        "evaluation_jobs": [
+            ("report", "JSON"),
+            ("status", "TEXT NOT NULL DEFAULT 'pending'"),
         ],
     }
 
     with db.engine.begin() as connection:
+        existing_tables = _sqlite_tables(connection)
         for table_name, columns in column_migrations.items():
+            if table_name not in existing_tables:
+                continue
             existing_columns = _sqlite_columns(connection, table_name)
             for column_name, column_def in columns:
                 if column_name in existing_columns:
