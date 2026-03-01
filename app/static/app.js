@@ -42,6 +42,89 @@ const isCompatibleAgent = (agent, activeEngine) => {
   return (agent.engine || '').toLowerCase() === activeEngine.toLowerCase();
 };
 
+const engineTooltipText = (engine) => {
+  if (engine.reachable) return `Inference engine reachable. Last checked ${engine.last_checked || 'never'}.`;
+  return `Inference engine unreachable at ${engine.host}. Last checked ${engine.last_checked || 'never'}. Click for diagnostics and retry.`;
+};
+
+const modelTooltipText = (model) => {
+  if (model.load_state === 'not_present') return 'Model files not found on host. Add model files or update model path.';
+  if (model.load_state === 'cold') return 'Model present on disk but not loaded in engine. Click to load.';
+  return `Model loaded in inference engine (cached). Last loaded ${model.last_load_attempt || 'unknown'}.`;
+};
+
+const agentTooltipText = (status) => {
+  if (status === 'ready') return 'Agent ready to accept queries: engine reachable and model loaded.';
+  if (status === 'partially_ready') return 'Agent is configured but runtime unavailable (engine unreachable or model not loaded). Click for diagnostics.';
+  if (status === 'not_ready') return 'Agent cannot run (model missing or configuration error). Click to view error.';
+  return 'Agent is disabled.';
+};
+
+const agentPillClass = (status) => {
+  if (status === 'ready') return 'text-bg-success';
+  if (status === 'partially_ready') return 'text-bg-warning';
+  if (status === 'not_ready') return 'text-bg-danger';
+  return 'text-bg-secondary';
+};
+
+let activeStatusPopover = null;
+let popoverTimer = null;
+
+const closeStatusPopover = () => {
+  if (activeStatusPopover) {
+    activeStatusPopover.remove();
+    activeStatusPopover = null;
+  }
+  if (popoverTimer) {
+    clearTimeout(popoverTimer);
+    popoverTimer = null;
+  }
+};
+
+document.addEventListener('click', (event) => {
+  if (activeStatusPopover && !activeStatusPopover.contains(event.target) && !event.target.closest('.status-trigger')) {
+    closeStatusPopover();
+  }
+});
+
+const renderStatusPopover = ({ anchorEl, status, modelId, onStatusChanged }) => {
+  closeStatusPopover();
+  const rect = anchorEl.getBoundingClientRect();
+  const pop = document.createElement('div');
+  pop.className = 'status-popover card shadow-sm p-2';
+  pop.style.left = `${rect.left + window.scrollX}px`;
+  pop.style.top = `${rect.bottom + window.scrollY + 8}px`;
+
+  const recentLogs = (status.logs?.recent || []).slice(-5).map((line) => `<li class="small"><code>${line}</code></li>`).join('') || '<li class="small text-muted">No recent logs</li>';
+  pop.innerHTML = `
+    <div class="small"><strong>Engine:</strong> ${status.engine.message || (status.engine.reachable ? 'ok' : 'unreachable')}<br/><span class="text-muted">${status.engine.last_checked || 'never'}</span></div>
+    <div class="small mt-2"><strong>Model load:</strong> ${status.model.last_load_message || status.model.load_state}<br/><span class="text-muted">${status.model.last_load_attempt || 'never'}</span></div>
+    <div class="small mt-2"><strong>Recent log snippet</strong><ul class="mb-2 ps-3">${recentLogs}</ul></div>
+    <div class="d-flex gap-2 flex-wrap">
+      <button class="btn btn-sm btn-outline-secondary" data-action="engine">Retry engine check</button>
+      <button class="btn btn-sm btn-outline-primary" data-action="reload" ${status.model.load_state === 'not_present' ? 'disabled' : ''}>Reload model</button>
+      <button class="btn btn-sm btn-outline-dark" data-action="logs">View agent logs</button>
+    </div>
+  `;
+  document.body.appendChild(pop);
+  activeStatusPopover = pop;
+  popoverTimer = setTimeout(closeStatusPopover, 30000);
+
+  pop.querySelector('[data-action="engine"]').onclick = async () => {
+    await api('/api/v1/engine/check', { method: 'POST', body: JSON.stringify({ model_id: modelId }) });
+    await onStatusChanged();
+    closeStatusPopover();
+  };
+  pop.querySelector('[data-action="reload"]').onclick = async () => {
+    await api(`/api/v1/models/${modelId}/reload`, { method: 'POST' });
+    await onStatusChanged();
+    closeStatusPopover();
+  };
+  pop.querySelector('[data-action="logs"]').onclick = () => {
+    alert((status.logs?.recent || []).join('\n') || 'No logs found');
+  };
+};
+
 async function warmModelById(modelId) {
   return api('/api/models/warm', {
     method: 'POST',
@@ -55,12 +138,28 @@ async function initSetupPage() {
 
   const loadModels = async () => {
     const models = await api('/api/models');
-    byId('model-list').innerHTML = models.map((m) => `
+    const statuses = await Promise.all(models.map(async (m) => {
+      try {
+        const status = await api(`/api/v1/models/${m.id}/status`);
+        return [m.id, status];
+      } catch (err) {
+        return [m.id, null];
+      }
+    }));
+    const statusMap = Object.fromEntries(statuses);
+
+    byId('model-list').innerHTML = models.map((m) => {
+      const status = statusMap[m.id];
+      const engine = status?.engine;
+      const model = status?.model;
+      const engineSignal = engine ? `<button class="status-trigger engine-signal ${engine.reachable ? 'is-ok' : 'is-bad'}" title="${engineTooltipText(engine)}" data-model-id="${m.id}" data-status-target="engine"></button>` : statusDot(m.status);
+      const loadBadge = model ? `<button class="status-trigger btn btn-sm ${model.load_state === 'warm' ? 'btn-success' : (model.load_state === 'cold' ? 'btn-secondary' : 'btn-danger')}" title="${modelTooltipText(model)}" data-model-id="${m.id}" data-status-target="model">${model.load_state === 'warm' ? 'Warm' : (model.load_state === 'cold' ? 'Cold' : 'Not Present')}</button>` : warmBadge(m.warm_status);
+      return `
       <div class="list-group-item d-flex justify-content-between align-items-center">
         <div>
-          ${statusDot(m.status)}<strong>${m.name}</strong>
+          ${engineSignal}<strong>${m.name}</strong>
           <small class="text-muted">${m.host}:${m.port} • ${m.backend}/${m.model_name}</small>
-          <div class="mt-1">${warmBadge(m.warm_status)}</div>
+          <div class="mt-1">${loadBadge}</div>
         </div>
         <div>
           <button class="btn btn-sm btn-outline-primary" onclick='window.loadModel(${m.id})'>Load Model</button>
@@ -68,7 +167,16 @@ async function initSetupPage() {
           <button class="btn btn-sm btn-outline-danger" onclick='window.deleteModel(${m.id})'>Delete</button>
         </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
+
+    document.querySelectorAll('#model-list .status-trigger').forEach((trigger) => {
+      trigger.onclick = async (event) => {
+        const modelId = Number(event.currentTarget.dataset.modelId);
+        const status = await api(`/api/v1/models/${modelId}/status`);
+        renderStatusPopover({ anchorEl: event.currentTarget, status, modelId, onStatusChanged: async () => { await loadModels(); await loadAgents(); } });
+      };
+    });
 
     const active = models.find((m) => m.status === 'green');
     const activeEngine = active ? (active.engine || active.backend) : null;
@@ -83,15 +191,37 @@ async function initSetupPage() {
 
   const loadAgents = async () => {
     const agents = await api('/api/agents');
-    byId('agent-list').innerHTML = agents.map((a) => `
+    const statuses = await Promise.all(agents.map(async (a) => {
+      try {
+        const status = await api(`/api/v1/agents/${a.id}/status`);
+        return [a.id, status];
+      } catch (err) {
+        return [a.id, null];
+      }
+    }));
+    const statusMap = Object.fromEntries(statuses);
+
+    byId('agent-list').innerHTML = agents.map((a) => {
+      const s = statusMap[a.id];
+      const agg = s?.agent?.status || a.aggregate_status || 'partially_ready';
+      return `
       <div class="list-group-item d-flex justify-content-between align-items-center">
-        <div>${statusDot(a.effective_status || 'yellow')}<strong>${a.name}</strong> <small class="text-muted">${a.model_name || a.model_id}</small></div>
+        <div><span class="badge ${agentPillClass(agg)} status-trigger" title="${agentTooltipText(agg)}" data-agent-id="${a.id}">${agg.replace('_', ' ')}</span> <strong>${a.name}</strong> <small class="text-muted">${a.model_name || a.model_id}</small></div>
         <div>
           <button class="btn btn-sm btn-outline-secondary" onclick='window.editAgent(${JSON.stringify(a)})'>Edit</button>
           <button class="btn btn-sm btn-outline-danger" onclick='window.deleteAgent(${a.id})'>Delete</button>
         </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
+
+    document.querySelectorAll('#agent-list .status-trigger').forEach((trigger) => {
+      trigger.onclick = async (event) => {
+        const agentId = Number(event.currentTarget.dataset.agentId);
+        const status = await api(`/api/v1/agents/${agentId}/status`);
+        renderStatusPopover({ anchorEl: event.currentTarget, status, modelId: status?.model_id || Number(status?.model?.id || 0) || Number(agents.find((a) => a.id === agentId)?.model_id), onStatusChanged: async () => { await loadModels(); await loadAgents(); } });
+      };
+    });
   };
 
   const modelEngine = byId('model-engine');
@@ -249,14 +379,33 @@ async function initChatPage() {
     const active = models.find((m) => m.status === 'green');
     activeEngine = active ? (active.engine || active.backend || '').toLowerCase() : null;
 
-    const alive = agents.filter((a) => a.effective_status === 'green');
-    const options = alive.map((a) => {
+    const statusEntries = await Promise.all(agents.map(async (a) => {
+      try {
+        const status = await api(`/api/v1/agents/${a.id}/status`);
+        return [a.id, status.agent.status];
+      } catch (err) {
+        return [a.id, 'partially_ready'];
+      }
+    }));
+    const statusMap = Object.fromEntries(statusEntries);
+
+    const options = agents.map((a) => {
       const engine = (a.engine || '').toLowerCase();
-      const disabled = activeEngine && engine !== activeEngine;
-      return `<option value="${a.id}" data-model-id="${a.model_id}" ${disabled ? 'disabled' : ''}>${a.name}${disabled ? ' (engine mismatch)' : ''}</option>`;
+      const status = statusMap[a.id] || 'partially_ready';
+      const mismatch = activeEngine && engine !== activeEngine;
+      const blocked = mismatch || status === 'partially_ready' || status === 'not_ready' || status === 'disabled';
+      return `<option value="${a.id}" data-model-id="${a.model_id}" ${blocked ? 'disabled' : ''}>${a.name}${blocked ? ` (${status.replace('_', ' ')}, retry required)` : ''}</option>`;
     }).join('');
     byId('chat-agent1').innerHTML = options;
     byId('chat-agent2').innerHTML = options;
+
+    const list = byId('chat-agent-status-list');
+    if (list) {
+      list.innerHTML = agents.map((a) => {
+        const status = statusMap[a.id] || 'partially_ready';
+        return `<li class="list-group-item d-flex justify-content-between"><span>${a.name}</span><span class="badge ${agentPillClass(status)}">${status.replace('_', ' ')}</span></li>`;
+      }).join('');
+    }
   };
 
   const ensureChatWarm = async () => {
