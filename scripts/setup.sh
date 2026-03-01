@@ -51,6 +51,29 @@ pip install -r requirements.txt
 echo "Initializing database..."
 python scripts/init_db.py
 
+DB_PATH="$(pwd)/instance/bench_duo.db"
+
+if [[ -f "$DB_PATH" ]]; then
+    echo "Checking SQLite schema compatibility..."
+    TABLE_EXISTS=$(sqlite3 "$DB_PATH" "SELECT name FROM sqlite_master WHERE type='table' AND name='models';")
+
+    if [[ "$TABLE_EXISTS" == "models" ]]; then
+        COLUMN_EXISTS=$(sqlite3 "$DB_PATH" "PRAGMA table_info(models);" | awk -F'|' '$2 == "last_load_attempt_at" {print $2}')
+
+        if [[ -z "$COLUMN_EXISTS" ]]; then
+            echo "Adding missing column models.last_load_attempt_at..."
+            sqlite3 "$DB_PATH" "ALTER TABLE models ADD COLUMN last_load_attempt_at DATETIME;"
+            echo "Added models.last_load_attempt_at."
+        else
+            echo "Column models.last_load_attempt_at already exists."
+        fi
+    else
+        echo "Table models does not exist. Skipping compatibility migration."
+    fi
+else
+    echo "Database file not found at $DB_PATH. Skipping compatibility migration."
+fi
+
 echo ""
 echo "===== Setup Complete ====="
 echo "Activate with: source .venv/bin/activate"
