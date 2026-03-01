@@ -4,7 +4,7 @@ from unittest.mock import patch
 from app import create_app
 from app.connectors import ConnectorError
 from app.extensions import db
-from app.models import Model
+from app.models import Agent, Model
 
 
 class TestConfig:
@@ -130,6 +130,49 @@ class SetupApiTests(unittest.TestCase):
         payload = response.get_json()
         self.assertTrue(payload["success"])
         self.assertEqual(payload["models"], ["llama3.1:8b", "mistral"])
+
+
+    @patch("app.views.setup.warm_model", return_value="warm")
+    def test_post_models_warm_updates_status(self, mock_warm_model) -> None:
+        model = Model(name="GPU3", host="127.0.0.1", port=11434, backend="ollama", engine="ollama", model_name="llama3", selected_model="llama3", status="green")
+        db.session.add(model)
+        db.session.commit()
+
+        response = self.client.post("/api/models/warm", json={"model_id": model.id})
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["status"], "warm")
+        mock_warm_model.assert_called_once()
+
+    def test_get_model_status_returns_warm_status(self) -> None:
+        model = Model(name="GPU4", host="127.0.0.1", port=11434, backend="ollama", engine="ollama", model_name="llama3", status="green", warm_status="cold")
+        db.session.add(model)
+        db.session.commit()
+
+        response = self.client.get(f"/api/models/status/{model.id}")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["warm_status"], "cold")
+
+    def test_create_agent_with_engine_mismatch_returns_400(self) -> None:
+        active = Model(name="active", host="127.0.0.1", port=11434, backend="ollama", engine="ollama", model_name="a", status="green")
+        wrong = Model(name="wrong", host="127.0.0.1", port=8000, backend="mlx", engine="mlx", model_name="b", status="green")
+        db.session.add_all([active, wrong])
+        db.session.commit()
+
+        response = self.client.post("/api/agents", json={
+            "name": "mismatch-agent",
+            "model_id": wrong.id,
+            "system_prompt": "hello",
+            "max_tokens": 16,
+            "temperature": 0.1,
+        })
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["error"], "Engine mismatch")
 
 
 if __name__ == "__main__":

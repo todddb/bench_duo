@@ -35,6 +35,7 @@ class ChatSocketIOTests(unittest.TestCase):
             backend="ollama",
             model_name="llama",
             status="green",
+            warm_status="warm",
         )
         model2 = Model(
             name="model-2",
@@ -43,6 +44,7 @@ class ChatSocketIOTests(unittest.TestCase):
             backend="ollama",
             model_name="mistral",
             status="green",
+            warm_status="warm",
         )
         db.session.add_all([model1, model2])
         db.session.flush()
@@ -142,6 +144,55 @@ class ChatSocketIOTests(unittest.TestCase):
         conversation = db.session.get(Conversation, conversation_id)
         self.assertEqual(conversation.status, "finished")
         self.assertIsNotNone(conversation.finished_at)
+
+
+    def test_engine_mismatch_is_blocked(self) -> None:
+        mlx_model = Model(name="m3", host="localhost", port=8000, backend="mlx", engine="mlx", model_name="mlx-a", status="green", warm_status="warm")
+        db.session.add(mlx_model)
+        db.session.flush()
+        mixed_agent = Agent(name="agent-mlx", model_id=mlx_model.id, system_prompt="mlx", max_tokens=64, temperature=0.1)
+        db.session.add(mixed_agent)
+        db.session.commit()
+
+        ack = self.client.emit(
+            "start_chat",
+            {
+                "agent1_id": self.agent1.id,
+                "agent2_id": mixed_agent.id,
+                "prompt": "hello",
+                "ttl": 2,
+                "seed": 1,
+            },
+            namespace="/",
+            callback=True,
+        )
+        self.assertEqual(ack[1], 400)
+        self.assertEqual(ack[0]["error"], "Engine mismatch")
+
+    @patch("app.views.chat.warm_model", return_value="warm")
+    @patch("app.views.chat._connector_for_agent")
+    def test_cold_model_triggers_warm_before_chat(self, mock_connector_factory, mock_warm_model) -> None:
+        self.agent1.model.warm_status = "cold"
+        self.agent2.model.warm_status = "cold"
+        db.session.commit()
+
+        mock_connector_factory.return_value = _FakeConnector("X")
+
+        ack = self.client.emit(
+            "start_chat",
+            {
+                "agent1_id": self.agent1.id,
+                "agent2_id": self.agent2.id,
+                "prompt": "hello",
+                "ttl": 1,
+                "seed": 123,
+            },
+            namespace="/",
+            callback=True,
+        )
+
+        self.assertIn("conversation_id", ack)
+        self.assertEqual(mock_warm_model.call_count, 2)
 
 
 if __name__ == "__main__":

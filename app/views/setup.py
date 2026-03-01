@@ -12,6 +12,7 @@ from app.connectors.probe import probe_backend
 from app.extensions import db
 from app.models import Agent, Model
 from app.security import sanitize_text_input, validate_host
+from app.services.model_warm import warm_model
 
 setup_bp = Blueprint("setup", __name__, url_prefix="/api")
 
@@ -34,6 +35,8 @@ def _model_to_dict(model: Model) -> dict[str, Any]:
         "model_name": model.model_name,
         "selected_model": model.selected_model,
         "status": model.status,
+        "warm_status": model.warm_status,
+        "last_warmed_at": model.last_warmed_at.isoformat() if model.last_warmed_at else None,
     }
 
 
@@ -44,6 +47,7 @@ def _agent_to_dict(agent: Agent) -> dict[str, Any]:
         "name": agent.name,
         "model_id": agent.model_id,
         "model_name": agent.model.name if agent.model else None,
+        "engine": (agent.model.engine if agent.model else None),
         "system_prompt": agent.system_prompt,
         "max_tokens": agent.max_tokens,
         "temperature": agent.temperature,
@@ -111,6 +115,14 @@ def _validate_model_payload(payload: Any, required: set[str]) -> ValidationResul
     return ValidationResult(ok=True, data=data)
 
 
+
+
+def _active_backend_engine() -> str | None:
+    active = Model.query.filter_by(status="green").order_by(Model.id.asc()).first()
+    if active is None:
+        return None
+    return (active.engine or active.backend).lower()
+
 def _validate_agent_payload(payload: Any, required: set[str]) -> ValidationResult:
     if not isinstance(payload, dict):
         return ValidationResult(ok=False, error="Invalid JSON payload")
@@ -134,8 +146,13 @@ def _validate_agent_payload(payload: Any, required: set[str]) -> ValidationResul
         except (TypeError, ValueError):
             return ValidationResult(ok=False, error="model_id must be an integer")
 
-        if db.session.get(Model, model_id) is None:
+        model = db.session.get(Model, model_id)
+        if model is None:
             return ValidationResult(ok=False, error="model_id does not exist")
+        active_engine = _active_backend_engine()
+        model_engine = (model.engine or model.backend).lower()
+        if active_engine and model_engine != active_engine:
+            return ValidationResult(ok=False, error="Engine mismatch")
         data["model_id"] = model_id
 
     if "system_prompt" in payload:
@@ -255,6 +272,34 @@ def probe_models() -> Any:
         return jsonify({"success": True, "models": models, "data": {"models": models}})
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
+
+
+
+
+@setup_bp.post("/models/warm")
+def warm_model_endpoint() -> Any:
+    payload = request.get_json(silent=True) or {}
+    model_id = payload.get("model_id")
+    try:
+        model_id = int(model_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "model_id must be an integer"}), 400
+
+    model = db.session.get(Model, model_id)
+    if model is None:
+        return jsonify({"success": False, "error": "Model not found"}), 404
+
+    status = warm_model(model)
+    return jsonify({"success": True, "status": status, "data": {"model_id": model.id, "warm_status": status}})
+
+
+@setup_bp.get("/models/status/<int:model_id>")
+def get_model_status(model_id: int) -> Any:
+    model = db.session.get(Model, model_id)
+    if model is None:
+        return jsonify({"success": False, "error": "Model not found"}), 404
+
+    return jsonify({"success": True, "warm_status": model.warm_status, "data": {"model_id": model.id, "warm_status": model.warm_status}})
 
 
 @setup_bp.post("/models/test")

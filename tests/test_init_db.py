@@ -46,4 +46,7 @@ def test_apply_sqlite_compat_migrations_adds_missing_model_columns(tmp_path: Pat
 
     assert "engine" in columns
     assert "selected_model" in columns
-    db.session.remove()
+    assert "warm_status" in columns
+    assert "last_warmed_at" in columns
+    with app.app_context():
+        db.session.remove()
