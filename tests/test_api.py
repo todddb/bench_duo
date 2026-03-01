@@ -46,7 +46,7 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(model_payload["success"])
         self.assertSetEqual(
             set(model_payload["data"].keys()),
-            {"id", "name", "host", "port", "backend", "engine", "model_name", "selected_model", "status"},
+            {"id", "name", "host", "port", "backend", "engine", "model_name", "selected_model", "status", "warm_status", "last_warmed_at"},
         )
 
         model_id = model_payload["data"]["id"]
@@ -76,6 +76,7 @@ class ApiTests(unittest.TestCase):
                 "status",
                 "model_status",
                 "effective_status",
+                "engine",
             },
         )
 
@@ -91,8 +92,9 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(len(agent_list), 1)
         self.assertEqual(agent_list[0]["name"], "A1")
 
+    @patch("app.views.chat.warm_model", return_value="warm")
     @patch("app.views.chat._connector_for_agent")
-    def test_conversation_endpoints_return_messages_and_stats(self, mock_connector_factory) -> None:
+    def test_conversation_endpoints_return_messages_and_stats(self, mock_connector_factory, _mock_warm) -> None:
         class _EchoConnector:
             def chat(self, messages, settings):
                 return f"reply:{messages[-1]['content']}"
@@ -176,8 +178,9 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(bad_port.status_code, 400)
 
 
+    @patch("app.views.chat.warm_model", return_value="warm")
     @patch("app.views.chat._connector_for_agent")
-    def test_conversation_export_supports_json_and_csv(self, mock_connector_factory) -> None:
+    def test_conversation_export_supports_json_and_csv(self, mock_connector_factory, _mock_warm) -> None:
         class _EchoConnector:
             def chat(self, messages, settings):
                 return f"reply:{messages[-1]['content']}"

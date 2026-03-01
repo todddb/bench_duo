@@ -20,6 +20,8 @@ def _apply_sqlite_compat_migrations() -> None:
         "models": [
             ("engine", "TEXT NOT NULL DEFAULT 'ollama'"),
             ("selected_model", "TEXT"),
+            ("warm_status", "TEXT NOT NULL DEFAULT 'cold'"),
+            ("last_warmed_at", "DATETIME"),
         ],
     }
 

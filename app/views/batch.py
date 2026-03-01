@@ -13,6 +13,7 @@ from flask import Blueprint, Response, current_app, jsonify, request
 from app.connectors import Connector, MLXConnector, OllamaConnector, TensorRTConnector
 from app.extensions import db
 from app.models import Agent, BatchJob, Conversation, Message
+from app.services.model_warm import warm_model
 from app.security import sanitize_text_input
 
 batch_bp = Blueprint("batch", __name__, url_prefix="/api")
@@ -208,6 +209,14 @@ def _create_batch_job(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
     agent2 = db.session.get(Agent, agent2_id)
     if agent1 is None or agent2 is None:
         return {"success": False, "error": "agent1_id or agent2_id does not exist"}, 404
+
+    if agent1.model.engine != agent2.model.engine:
+        return {"success": False, "error": "Engine mismatch"}, 400
+
+    for model in [agent1.model, agent2.model]:
+        if model.warm_status != "warm":
+            if warm_model(model) != "warm":
+                return {"success": False, "error": f"Model warm failed for {model.name}"}, 400
 
     batch = BatchJob(
         agent1_id=agent1_id,

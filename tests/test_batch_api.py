@@ -23,8 +23,8 @@ class BatchApiTests(unittest.TestCase):
         self.ctx = self.app.app_context()
         self.ctx.push()
         db.create_all()
-        model1 = Model(name="m1", host="localhost", port=11434, backend="ollama", model_name="a", status="green")
-        model2 = Model(name="m2", host="localhost", port=11434, backend="ollama", model_name="b", status="green")
+        model1 = Model(name="m1", host="localhost", port=11434, backend="ollama", model_name="a", status="green", warm_status="warm")
+        model2 = Model(name="m2", host="localhost", port=11434, backend="ollama", model_name="b", status="green", warm_status="warm")
         db.session.add_all([model1, model2])
         db.session.flush()
         db.session.add_all([
@@ -109,6 +109,38 @@ class BatchApiTests(unittest.TestCase):
         self.assertEqual(csv_export.status_code, 200)
         self.assertEqual(csv_export.mimetype, "text/csv")
         self.assertIn("batch_id,conversation_id", csv_export.get_data(as_text=True))
+
+
+    def test_batch_rejects_engine_mismatch(self) -> None:
+        mlx_model = Model(name="m3", host="localhost", port=8000, backend="mlx", engine="mlx", model_name="c", status="green", warm_status="warm")
+        db.session.add(mlx_model)
+        db.session.flush()
+        mlx_agent = Agent(name="a3", model_id=mlx_model.id, system_prompt="z", max_tokens=32, temperature=0.1)
+        db.session.add(mlx_agent)
+        db.session.commit()
+
+        created = self.client.post(
+            "/api/batch_jobs",
+            json={"agent1_id": 1, "agent2_id": mlx_agent.id, "prompt": "start", "ttl": 1, "num_runs": 1, "seed": 7},
+        )
+        self.assertEqual(created.status_code, 400)
+        payload = created.get_json()
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["error"], "Engine mismatch")
+
+    @patch("app.views.batch.warm_model", return_value="warm")
+    @patch("app.views.batch._connector_for_agent", return_value=_FakeConnector())
+    def test_batch_auto_warms_cold_models(self, _mock_connector, mock_warm_model) -> None:
+        for model in Model.query.all():
+            model.warm_status = "cold"
+        db.session.commit()
+
+        created = self.client.post(
+            "/api/batch_jobs",
+            json={"agent1_id": 1, "agent2_id": 2, "prompt": "start", "ttl": 1, "num_runs": 1, "seed": 7},
+        )
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(mock_warm_model.call_count, 2)
 
 
 if __name__ == "__main__":

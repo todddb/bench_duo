@@ -29,6 +29,26 @@ const ENGINE_DEFAULT_PORTS = {
 const statusDot = (status) => `<span class="status-dot status-${status || 'red'}"></span>`;
 const byId = (id) => document.getElementById(id);
 
+
+const warmBadge = (status) => {
+  if (status === 'warm') return '<span class="badge text-bg-success">🟢 Warm</span>';
+  if (status === 'loading') return '<span class="badge text-bg-warning">🟡 Loading</span>';
+  if (status === 'error') return '<span class="badge text-bg-danger">🔴 Error</span>';
+  return '<span class="badge text-bg-secondary">🔴 Cold</span>';
+};
+
+const isCompatibleAgent = (agent, activeEngine) => {
+  if (!activeEngine) return true;
+  return (agent.engine || '').toLowerCase() === activeEngine.toLowerCase();
+};
+
+async function warmModelById(modelId) {
+  return api('/api/models/warm', {
+    method: 'POST',
+    body: JSON.stringify({ model_id: modelId }),
+  });
+}
+
 async function initSetupPage() {
   const modelModal = new bootstrap.Modal(byId('model-modal'));
   const agentModal = new bootstrap.Modal(byId('agent-modal'));
@@ -37,15 +57,28 @@ async function initSetupPage() {
     const models = await api('/api/models');
     byId('model-list').innerHTML = models.map((m) => `
       <div class="list-group-item d-flex justify-content-between align-items-center">
-        <div>${statusDot(m.status)}<strong>${m.name}</strong> <small class="text-muted">${m.host}:${m.port} • ${m.backend}/${m.model_name}</small></div>
         <div>
+          ${statusDot(m.status)}<strong>${m.name}</strong>
+          <small class="text-muted">${m.host}:${m.port} • ${m.backend}/${m.model_name}</small>
+          <div class="mt-1">${warmBadge(m.warm_status)}</div>
+        </div>
+        <div>
+          <button class="btn btn-sm btn-outline-primary" onclick='window.loadModel(${m.id})'>Load Model</button>
           <button class="btn btn-sm btn-outline-secondary" onclick='window.editModel(${JSON.stringify(m)})'>Edit</button>
           <button class="btn btn-sm btn-outline-danger" onclick='window.deleteModel(${m.id})'>Delete</button>
         </div>
       </div>
     `).join('');
+
+    const active = models.find((m) => m.status === 'green');
+    const activeEngine = active ? (active.engine || active.backend) : null;
     const select = byId('agent-model-id');
-    select.innerHTML = models.map((m) => `<option value="${m.id}">${m.name} (${m.model_name})</option>`).join('');
+    select.innerHTML = models.map((m) => {
+      const modelEngine = (m.engine || m.backend || '').toLowerCase();
+      const disabled = activeEngine && modelEngine !== activeEngine.toLowerCase();
+      const label = `${m.name} (${m.model_name})${disabled ? ' — incompatible engine' : ''}`;
+      return `<option value="${m.id}" ${disabled ? 'disabled' : ''}>${label}</option>`;
+    }).join('');
   };
 
   const loadAgents = async () => {
@@ -144,6 +177,11 @@ async function initSetupPage() {
     modelModal.show();
   };
   window.deleteModel = async (id) => { if (confirm('Delete model?')) { await api(`/api/models/${id}`, { method: 'DELETE' }); await loadModels(); await loadAgents(); } };
+  window.loadModel = async (modelId) => {
+    await warmModelById(modelId);
+    await loadModels();
+    await loadAgents();
+  };
 
   testModelBtn.onclick = testBackend;
 
@@ -193,13 +231,54 @@ async function initSetupPage() {
 }
 
 async function initChatPage() {
-  const agents = await api('/api/agents');
-  const alive = agents.filter((a) => a.effective_status === 'green');
-  const options = alive.map((a) => `<option value="${a.id}">${a.name}</option>`).join('');
-  byId('chat-agent1').innerHTML = options;
-  byId('chat-agent2').innerHTML = options;
-
   const pane = byId('chat-pane');
+  const startBtn = byId('start-chat');
+  const warmState = byId('chat-warm-state');
+
+  let modelById = {};
+  let activeEngine = null;
+
+  const setWarmState = (text, loading = false) => {
+    warmState.textContent = text;
+    warmState.className = loading ? 'small text-warning' : 'small text-muted';
+  };
+
+  const loadAgentsForChat = async () => {
+    const [agents, models] = await Promise.all([api('/api/agents'), api('/api/models')]);
+    modelById = Object.fromEntries(models.map((m) => [m.id, m]));
+    const active = models.find((m) => m.status === 'green');
+    activeEngine = active ? (active.engine || active.backend || '').toLowerCase() : null;
+
+    const alive = agents.filter((a) => a.effective_status === 'green');
+    const options = alive.map((a) => {
+      const engine = (a.engine || '').toLowerCase();
+      const disabled = activeEngine && engine !== activeEngine;
+      return `<option value="${a.id}" data-model-id="${a.model_id}" ${disabled ? 'disabled' : ''}>${a.name}${disabled ? ' (engine mismatch)' : ''}</option>`;
+    }).join('');
+    byId('chat-agent1').innerHTML = options;
+    byId('chat-agent2').innerHTML = options;
+  };
+
+  const ensureChatWarm = async () => {
+    const selected = [byId('chat-agent1'), byId('chat-agent2')];
+    startBtn.disabled = true;
+    for (const select of selected) {
+      const modelId = Number(select.selectedOptions[0]?.dataset.modelId || 0);
+      const model = modelById[modelId];
+      if (!model) continue;
+      if (model.warm_status !== 'warm') {
+        setWarmState(`Warming ${model.name}...`, true);
+        await warmModelById(modelId);
+      }
+    }
+    await loadAgentsForChat();
+    setWarmState('Ready');
+    startBtn.disabled = false;
+  };
+
+  await loadAgentsForChat();
+  setWarmState('Ready');
+
   const socket = io('/');
   let typingEl = null;
   let currentConversationId = null;
@@ -219,7 +298,11 @@ async function initChatPage() {
   });
   socket.on('chat_end', () => { if (typingEl) { typingEl.remove(); typingEl = null; } });
 
-  byId('start-chat').onclick = () => {
+  byId('chat-agent1').onchange = ensureChatWarm;
+  byId('chat-agent2').onchange = ensureChatWarm;
+
+  byId('start-chat').onclick = async () => {
+    await ensureChatWarm();
     pane.innerHTML = '';
     currentConversationId = null;
     byId('export-conversation-json').disabled = true;
@@ -254,13 +337,51 @@ async function initChatPage() {
 }
 
 async function initBatchPage() {
-  const agents = await api('/api/agents');
-  const alive = agents.filter((a) => a.effective_status === 'green');
-  const options = alive.map((a) => `<option value="${a.id}">${a.name}</option>`).join('');
-  byId('batch-agent1').innerHTML = options;
-  byId('batch-agent2').innerHTML = options;
+  const startBatchBtn = byId('start-batch');
+  const warmState = byId('batch-warm-state');
 
   let activeBatchId = null;
+  let modelById = {};
+  let activeEngine = null;
+
+  const setWarmState = (text, loading = false) => {
+    warmState.textContent = text;
+    warmState.className = loading ? 'small text-warning mb-2' : 'small text-muted mb-2';
+  };
+
+  const loadAgentsForBatch = async () => {
+    const [agents, models] = await Promise.all([api('/api/agents'), api('/api/models')]);
+    modelById = Object.fromEntries(models.map((m) => [m.id, m]));
+    const active = models.find((m) => m.status === 'green');
+    activeEngine = active ? (active.engine || active.backend || '').toLowerCase() : null;
+    const alive = agents.filter((a) => a.effective_status === 'green');
+    const options = alive.map((a) => {
+      const engine = (a.engine || '').toLowerCase();
+      const disabled = activeEngine && engine !== activeEngine;
+      return `<option value="${a.id}" data-model-id="${a.model_id}" ${disabled ? 'disabled' : ''}>${a.name}${disabled ? ' (engine mismatch)' : ''}</option>`;
+    }).join('');
+    byId('batch-agent1').innerHTML = options;
+    byId('batch-agent2').innerHTML = options;
+  };
+
+  const ensureBatchWarm = async () => {
+    startBatchBtn.disabled = true;
+    for (const select of [byId('batch-agent1'), byId('batch-agent2')]) {
+      const modelId = Number(select.selectedOptions[0]?.dataset.modelId || 0);
+      const model = modelById[modelId];
+      if (!model) continue;
+      if (model.warm_status !== 'warm') {
+        setWarmState(`Warming ${model.name}...`, true);
+        await warmModelById(modelId);
+      }
+    }
+    await loadAgentsForBatch();
+    setWarmState('Ready');
+    startBatchBtn.disabled = false;
+  };
+
+  await loadAgentsForBatch();
+  setWarmState('Ready');
 
   const renderBatch = (detail) => {
     const s = detail.summary || {};
@@ -298,7 +419,11 @@ async function initBatchPage() {
     });
   };
 
+  byId('batch-agent1').onchange = ensureBatchWarm;
+  byId('batch-agent2').onchange = ensureBatchWarm;
+
   byId('start-batch').onclick = async () => {
+    await ensureBatchWarm();
     byId('export-batch-json').disabled = true;
     byId('export-batch-csv').disabled = true;
     const created = await api('/api/batch_jobs', {

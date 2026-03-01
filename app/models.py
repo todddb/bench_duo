@@ -27,6 +27,8 @@ class Model(BaseModel):
     model_name = db.Column(db.String(255), nullable=False)
     selected_model = db.Column(db.String(255), nullable=True)
     status = db.Column(db.String(32), nullable=False, default="unknown")
+    warm_status = db.Column(db.String(20), nullable=False, default="cold")
+    last_warmed_at = db.Column(db.DateTime, nullable=True)
 
     agents = db.relationship("Agent", back_populates="model", cascade="all, delete-orphan")
 
