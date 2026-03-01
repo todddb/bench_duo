@@ -1,10 +1,29 @@
 const api = async (path, opts = {}) => {
   const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
-  const payload = await res.json();
+  const text = await res.text();
+
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch (err) {
+    console.error('Non-JSON response:', text);
+    throw new Error('Server returned invalid response. Check backend logs.');
+  }
+
   if (!res.ok || payload.success === false) {
     throw new Error(payload.error || `Request failed: ${res.status}`);
   }
-  return payload.data;
+
+  if (Object.prototype.hasOwnProperty.call(payload, 'data')) {
+    return payload.data;
+  }
+  return payload;
+};
+
+const ENGINE_DEFAULT_PORTS = {
+  ollama: 11434,
+  mlx: 8000,
+  'tensorrt-llm': 8001,
 };
 
 const statusDot = (status) => `<span class="status-dot status-${status || 'red'}"></span>`;
@@ -42,7 +61,7 @@ async function initSetupPage() {
     `).join('');
   };
 
-  const modelBackend = byId('model-backend');
+  const modelEngine = byId('model-engine');
   const modelNameSelect = byId('model-model-name');
   const saveModelBtn = byId('save-model-btn');
   const testModelBtn = byId('test-model-btn');
@@ -58,20 +77,14 @@ async function initSetupPage() {
   };
 
   const resetModelDetection = () => {
-    modelBackend.innerHTML = '';
     modelNameSelect.innerHTML = '';
-    modelBackend.disabled = true;
     modelNameSelect.disabled = true;
     saveModelBtn.disabled = true;
     testModelBtn.disabled = false;
     setModelTestState('idle', 'Not tested');
   };
 
-  const setDetectionOptions = (backend, models) => {
-    modelBackend.innerHTML = `<option value="${backend}">${backend}</option>`;
-    modelBackend.value = backend;
-    modelBackend.disabled = false;
-
+  const setDetectionOptions = (models) => {
     const modelOptions = models.length ? models : ['No models found'];
     modelNameSelect.innerHTML = modelOptions.map((model) => `<option value="${model}">${model}</option>`).join('');
     modelNameSelect.disabled = !models.length;
@@ -87,12 +100,13 @@ async function initSetupPage() {
     testModelBtn.disabled = true;
 
     try {
-      const result = await api('/api/models/test', {
+      const result = await api('/api/models/probe', {
         method: 'POST',
-        body: JSON.stringify({ host, port }),
+        body: JSON.stringify({ host, port, engine: modelEngine.value }),
       });
-      setDetectionOptions(result.backend, result.models || []);
-      setModelTestState('success', `Detected ${result.backend}`);
+      const models = result.models || [];
+      setDetectionOptions(models);
+      setModelTestState('success', `Detected ${modelEngine.value}`);
     } catch (err) {
       resetModelDetection();
       setModelTestState('error', err.message);
@@ -105,23 +119,25 @@ async function initSetupPage() {
   byId('add-model-btn').onclick = () => {
     byId('model-form').reset();
     byId('model-id').value = '';
-    byId('model-port').value = 9001;
+    modelEngine.value = 'ollama';
+    byId('model-port').value = ENGINE_DEFAULT_PORTS.ollama;
     resetModelDetection();
     modelModal.show();
   };
   byId('add-agent-btn').onclick = () => { byId('agent-form').reset(); byId('agent-id').value = ''; agentModal.show(); };
-  byId('refresh-models').onclick = async () => { await api('/api/models/probe', { method: 'POST' }); await loadModels(); await loadAgents(); };
+  byId('refresh-models').onclick = async () => { await loadModels(); await loadAgents(); };
 
   window.editModel = (m) => {
     byId('model-id').value = m.id;
     byId('model-name').value = m.name;
     byId('model-host').value = m.host;
-    byId('model-port').value = m.port || 9001;
-    setDetectionOptions(m.backend, m.model_name ? [m.model_name] : []);
+    modelEngine.value = m.engine || m.backend || 'ollama';
+    byId('model-port').value = m.port || ENGINE_DEFAULT_PORTS[modelEngine.value] || 11434;
+    setDetectionOptions(m.model_name ? [m.model_name] : []);
     if (m.model_name) {
       modelNameSelect.value = m.model_name;
       saveModelBtn.disabled = false;
-      setModelTestState('success', `Loaded ${m.backend}`);
+      setModelTestState('success', `Loaded ${modelEngine.value}`);
     } else {
       setModelTestState('idle', 'Not tested');
     }
@@ -130,6 +146,15 @@ async function initSetupPage() {
   window.deleteModel = async (id) => { if (confirm('Delete model?')) { await api(`/api/models/${id}`, { method: 'DELETE' }); await loadModels(); await loadAgents(); } };
 
   testModelBtn.onclick = testBackend;
+
+  modelEngine.addEventListener('change', async function onEngineChange() {
+    const engine = this.value;
+    const defaultPort = ENGINE_DEFAULT_PORTS[engine];
+    if (defaultPort) byId('model-port').value = defaultPort;
+    resetModelDetection();
+    await testBackend();
+  });
+
 
   window.editAgent = (a) => {
     byId('agent-id').value = a.id; byId('agent-name').value = a.name; byId('agent-model-id').value = a.model_id;
@@ -144,7 +169,7 @@ async function initSetupPage() {
       name: byId('model-name').value,
       host: byId('model-host').value,
       port: Number(byId('model-port').value || 9001),
-      backend: byId('model-backend').value,
+      engine: modelEngine.value,
       model_name: byId('model-model-name').value,
       selected_model: byId('model-model-name').value,
     };

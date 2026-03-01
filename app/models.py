@@ -23,6 +23,7 @@ class Model(BaseModel):
     host = db.Column(db.String(255), nullable=False)
     port = db.Column(db.Integer, nullable=False)
     backend = db.Column(db.String(64), nullable=False)
+    engine = db.Column(db.String(50), nullable=False, default="ollama")
     model_name = db.Column(db.String(255), nullable=False)
     selected_model = db.Column(db.String(255), nullable=True)
     status = db.Column(db.String(32), nullable=False, default="unknown")

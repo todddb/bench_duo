@@ -5,12 +5,16 @@
       <input type="hidden" id="model-id" />
       <input class="form-control mb-2" id="model-name" placeholder="Name" required />
       <input class="form-control mb-2" id="model-host" placeholder="Host" required />
-      <input class="form-control mb-2" id="model-port" type="number" placeholder="Port" value="9001" required />
+      <select class="form-select mb-2" id="model-engine" required>
+        <option value="ollama">Ollama</option>
+        <option value="mlx">MLX</option>
+        <option value="tensorrt-llm">TensorRT-LLM</option>
+      </select>
+      <input class="form-control mb-2" id="model-port" type="number" placeholder="Port" value="11434" required />
       <div class="d-flex gap-2 align-items-center mb-2">
         <button class="btn btn-outline-primary" id="test-model-btn" type="button">Test</button>
         <span id="model-test-status" class="badge text-bg-secondary">Not tested</span>
       </div>
-      <select class="form-select mb-2" id="model-backend" disabled></select>
       <select class="form-select mb-2" id="model-model-name" disabled></select>
     </div><div class="modal-footer"><button class="btn btn-primary" id="save-model-btn" type="submit" disabled>Save</button></div></form>
   </div></div>
