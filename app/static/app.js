@@ -42,15 +42,94 @@ async function initSetupPage() {
     `).join('');
   };
 
-  byId('add-model-btn').onclick = () => { byId('model-form').reset(); byId('model-id').value = ''; modelModal.show(); };
+  const modelBackend = byId('model-backend');
+  const modelNameSelect = byId('model-model-name');
+  const saveModelBtn = byId('save-model-btn');
+  const testModelBtn = byId('test-model-btn');
+  const modelTestStatus = byId('model-test-status');
+
+  const setModelTestState = (state, message) => {
+    modelTestStatus.className = 'badge';
+    if (state === 'success') modelTestStatus.classList.add('text-bg-success');
+    else if (state === 'error') modelTestStatus.classList.add('text-bg-danger');
+    else if (state === 'loading') modelTestStatus.classList.add('text-bg-info');
+    else modelTestStatus.classList.add('text-bg-secondary');
+    modelTestStatus.textContent = message;
+  };
+
+  const resetModelDetection = () => {
+    modelBackend.innerHTML = '';
+    modelNameSelect.innerHTML = '';
+    modelBackend.disabled = true;
+    modelNameSelect.disabled = true;
+    saveModelBtn.disabled = true;
+    testModelBtn.disabled = false;
+    setModelTestState('idle', 'Not tested');
+  };
+
+  const setDetectionOptions = (backend, models) => {
+    modelBackend.innerHTML = `<option value="${backend}">${backend}</option>`;
+    modelBackend.value = backend;
+    modelBackend.disabled = false;
+
+    const modelOptions = models.length ? models : ['No models found'];
+    modelNameSelect.innerHTML = modelOptions.map((model) => `<option value="${model}">${model}</option>`).join('');
+    modelNameSelect.disabled = !models.length;
+    saveModelBtn.disabled = !models.length;
+  };
+
+  const testBackend = async () => {
+    const host = byId('model-host').value;
+    const rawPort = byId('model-port').value;
+    const port = rawPort ? Number(rawPort) : 9001;
+
+    setModelTestState('loading', 'Testing...');
+    testModelBtn.disabled = true;
+
+    try {
+      const result = await api('/api/models/test', {
+        method: 'POST',
+        body: JSON.stringify({ host, port }),
+      });
+      setDetectionOptions(result.backend, result.models || []);
+      setModelTestState('success', `Detected ${result.backend}`);
+    } catch (err) {
+      resetModelDetection();
+      setModelTestState('error', err.message);
+      alert(err.message);
+    } finally {
+      testModelBtn.disabled = false;
+    }
+  };
+
+  byId('add-model-btn').onclick = () => {
+    byId('model-form').reset();
+    byId('model-id').value = '';
+    byId('model-port').value = 9001;
+    resetModelDetection();
+    modelModal.show();
+  };
   byId('add-agent-btn').onclick = () => { byId('agent-form').reset(); byId('agent-id').value = ''; agentModal.show(); };
   byId('refresh-models').onclick = async () => { await api('/api/models/probe', { method: 'POST' }); await loadModels(); await loadAgents(); };
 
   window.editModel = (m) => {
-    byId('model-id').value = m.id; byId('model-name').value = m.name; byId('model-host').value = m.host;
-    byId('model-port').value = m.port; byId('model-backend').value = m.backend; byId('model-model-name').value = m.model_name; modelModal.show();
+    byId('model-id').value = m.id;
+    byId('model-name').value = m.name;
+    byId('model-host').value = m.host;
+    byId('model-port').value = m.port || 9001;
+    setDetectionOptions(m.backend, m.model_name ? [m.model_name] : []);
+    if (m.model_name) {
+      modelNameSelect.value = m.model_name;
+      saveModelBtn.disabled = false;
+      setModelTestState('success', `Loaded ${m.backend}`);
+    } else {
+      setModelTestState('idle', 'Not tested');
+    }
+    modelModal.show();
   };
   window.deleteModel = async (id) => { if (confirm('Delete model?')) { await api(`/api/models/${id}`, { method: 'DELETE' }); await loadModels(); await loadAgents(); } };
+
+  testModelBtn.onclick = testBackend;
 
   window.editAgent = (a) => {
     byId('agent-id').value = a.id; byId('agent-name').value = a.name; byId('agent-model-id').value = a.model_id;
@@ -62,8 +141,12 @@ async function initSetupPage() {
     e.preventDefault();
     const id = byId('model-id').value;
     const body = {
-      name: byId('model-name').value, host: byId('model-host').value, port: Number(byId('model-port').value),
-      backend: byId('model-backend').value, model_name: byId('model-model-name').value,
+      name: byId('model-name').value,
+      host: byId('model-host').value,
+      port: Number(byId('model-port').value || 9001),
+      backend: byId('model-backend').value,
+      model_name: byId('model-model-name').value,
+      selected_model: byId('model-model-name').value,
     };
     await api(id ? `/api/models/${id}` : '/api/models', { method: id ? 'PUT' : 'POST', body: JSON.stringify(body) });
     modelModal.hide(); await loadModels(); await loadAgents();
