@@ -21,4 +21,5 @@ if __name__ == "__main__":
         host=host,
         port=port,
         debug=False,
+        allow_unsafe_werkzeug=True,
     )
