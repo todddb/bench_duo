@@ -1,4 +1,4 @@
-from flask import Flask
+from flask import Flask, jsonify
 
 from .config import Config
 from .extensions import db, socketio
@@ -27,5 +27,13 @@ def create_app(config_class: type[Config] = Config) -> Flask:
 
     init_chat_worker(app)
     init_batch_worker(app)
+
+    @app.errorhandler(404)
+    def not_found(_: Exception):
+        return jsonify({"success": False, "error": "Not Found"}), 404
+
+    @app.errorhandler(500)
+    def internal_error(_: Exception):
+        return jsonify({"success": False, "error": "Internal Server Error"}), 500
 
     return app

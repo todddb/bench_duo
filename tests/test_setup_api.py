@@ -38,7 +38,7 @@ class SetupApiTests(unittest.TestCase):
                 "name": "GPU1",
                 "host": "10.0.0.5",
                 "port": 11434,
-                "backend": "ollama",
+                "engine": "ollama",
                 "model_name": "gemma3",
                 "selected_model": "gemma3",
             },
@@ -75,7 +75,7 @@ class SetupApiTests(unittest.TestCase):
                 "name": "GPU2",
                 "host": "10.0.0.9",
                 "port": 11434,
-                "backend": "ollama",
+                "engine": "ollama",
                 "model_name": "gemma3",
                 "selected_model": "gemma3",
             },
@@ -115,6 +115,21 @@ class SetupApiTests(unittest.TestCase):
         payload = response.get_json()
         self.assertFalse(payload["success"])
         self.assertEqual(payload["error"], "Unable to detect backend")
+
+
+    @patch("app.views.setup.probe_backend")
+    def test_post_models_probe_returns_models_for_engine(self, mock_probe_backend) -> None:
+        mock_probe_backend.return_value = ["llama3.1:8b", "mistral"]
+
+        response = self.client.post(
+            "/api/models/probe",
+            json={"host": "127.0.0.1", "port": 11434, "engine": "ollama"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["models"], ["llama3.1:8b", "mistral"])
 
 
 if __name__ == "__main__":

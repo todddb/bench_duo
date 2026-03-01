@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.connectors import Connector, ConnectorError, MLXConnector, OllamaConnector, TensorRTConnector
 from app.connectors.detector import detect_backend
-import requests
+from app.connectors.probe import probe_backend
 from app.extensions import db
 from app.models import Agent, Model
 from app.security import sanitize_text_input, validate_host
@@ -30,6 +30,7 @@ def _model_to_dict(model: Model) -> dict[str, Any]:
         "host": model.host,
         "port": model.port,
         "backend": model.backend,
+        "engine": model.engine or model.backend,
         "model_name": model.model_name,
         "selected_model": model.selected_model,
         "status": model.status,
@@ -53,7 +54,7 @@ def _agent_to_dict(agent: Agent) -> dict[str, Any]:
 
 
 def _connector_for_model(model: Model) -> Connector:
-    backend = model.backend.lower()
+    backend = (model.engine or model.backend).lower()
     if backend == "ollama":
         return OllamaConnector(host=model.host, port=model.port)
     if backend == "mlx":
@@ -88,7 +89,7 @@ def _validate_model_payload(payload: Any, required: set[str]) -> ValidationResul
         return ValidationResult(ok=False, error=f"Missing required fields: {', '.join(missing)}")
 
     data: dict[str, Any] = {}
-    for key in ["name", "host", "backend", "model_name", "selected_model"]:
+    for key in ["name", "host", "backend", "engine", "model_name", "selected_model"]:
         if key in payload:
             value = payload.get(key)
             try:
@@ -165,21 +166,26 @@ def _validate_agent_payload(payload: Any, required: set[str]) -> ValidationResul
 
 @setup_bp.get("/models")
 def get_models() -> Any:
-    _refresh_all_model_statuses()
-    models = Model.query.order_by(Model.id.asc()).all()
-    return jsonify({"success": True, "data": [_model_to_dict(model) for model in models]})
+    try:
+        _refresh_all_model_statuses()
+        models = Model.query.order_by(Model.id.asc()).all()
+        return jsonify({"success": True, "data": [_model_to_dict(model) for model in models]})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 @setup_bp.post("/models")
 def create_model() -> Any:
     validation = _validate_model_payload(
         request.get_json(silent=True),
-        required={"name", "host", "port", "backend", "model_name"},
+        required={"name", "host", "port", "engine", "model_name"},
     )
     if not validation.ok:
         return jsonify({"success": False, "error": validation.error}), 400
 
-    model = Model(**validation.data)
+    payload = dict(validation.data)
+    payload["backend"] = payload.get("engine", payload.get("backend", "ollama"))
+    model = Model(**payload)
     db.session.add(model)
     try:
         db.session.flush()
@@ -205,7 +211,10 @@ def update_model(model_id: int) -> Any:
     if not validation.ok:
         return jsonify({"success": False, "error": validation.error}), 400
 
-    for key, value in validation.data.items():
+    update_data = dict(validation.data)
+    if "engine" in update_data and "backend" not in update_data:
+        update_data["backend"] = update_data["engine"]
+    for key, value in update_data.items():
         setattr(model, key, value)
 
     try:
@@ -231,52 +240,65 @@ def delete_model(model_id: int) -> Any:
 
 @setup_bp.post("/models/probe")
 def probe_models() -> Any:
-    _refresh_all_model_statuses()
-    models = Model.query.order_by(Model.id.asc()).all()
-    return jsonify({"success": True, "data": [_model_to_dict(model) for model in models]})
+    try:
+        payload = request.get_json(force=True)
+        host = sanitize_text_input(payload.get("host"), "host", max_length=255)
+        if not validate_host(host):
+            return jsonify({"success": False, "error": "host contains invalid characters"}), 400
 
+        port = int(payload.get("port"))
+        if not 1 <= port <= 65535:
+            return jsonify({"success": False, "error": "port must be between 1 and 65535"}), 400
 
+        engine = sanitize_text_input(payload.get("engine"), "engine", max_length=64).lower()
+        models = probe_backend(host, port, engine)
+        return jsonify({"success": True, "models": models, "data": {"models": models}})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
 
 
 @setup_bp.post("/models/test")
 def test_model_backend() -> Any:
-    payload = request.get_json(silent=True)
-    if not isinstance(payload, dict):
-        return jsonify({"success": False, "error": "Invalid JSON payload"}), 400
-
-    host_raw = payload.get("host")
     try:
-        host = sanitize_text_input(host_raw, "host", max_length=255)
-    except ValueError as exc:
-        return jsonify({"success": False, "error": str(exc)}), 400
+        payload = request.get_json(force=True)
+        if not isinstance(payload, dict):
+            return jsonify({"success": False, "error": "Invalid JSON payload"}), 400
 
-    if not validate_host(host):
-        return jsonify({"success": False, "error": "host contains invalid characters"}), 400
+        host = sanitize_text_input(payload.get("host"), "host", max_length=255)
+        if not validate_host(host):
+            return jsonify({"success": False, "error": "host contains invalid characters"}), 400
 
-    try:
         port = int(payload.get("port", 9001))
-    except (TypeError, ValueError):
-        return jsonify({"success": False, "error": "port must be an integer"}), 400
+        if not 1 <= port <= 65535:
+            return jsonify({"success": False, "error": "port must be between 1 and 65535"}), 400
 
-    if not 1 <= port <= 65535:
-        return jsonify({"success": False, "error": "port must be between 1 and 65535"}), 400
+        engine = payload.get("engine")
+        if engine:
+            normalized_engine = sanitize_text_input(engine, "engine", max_length=64).lower()
+            models = probe_backend(host, port, normalized_engine)
+            return jsonify({
+                "success": True,
+                "models": models,
+                "data": {
+                    "backend": normalized_engine,
+                    "models": models,
+                },
+            })
 
-    try:
         result = detect_backend(host, port)
-    except requests.RequestException as exc:
-        return jsonify({"success": False, "error": str(exc)}), 400
+        if not result:
+            return jsonify({"success": False, "error": "Unable to detect backend"}), 400
 
-    if not result:
-        return jsonify({"success": False, "error": "Unable to detect backend"}), 400
-
-    return jsonify({
-        "success": True,
-        "data": {
-            "backend": result["backend"],
-            "backend_version": result.get("version"),
-            "models": result.get("models", []),
-        },
-    })
+        return jsonify({
+            "success": True,
+            "data": {
+                "backend": result["backend"],
+                "backend_version": result.get("version"),
+                "models": result.get("models", []),
+            },
+        })
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 @setup_bp.get("/agents")
 def get_agents() -> Any:

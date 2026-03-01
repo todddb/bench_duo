@@ -37,7 +37,7 @@ class ApiTests(unittest.TestCase):
                 "name": "M1",
                 "host": "localhost",
                 "port": 11434,
-                "backend": "ollama",
+                "engine": "ollama",
                 "model_name": "gemma3",
             },
         )
@@ -46,7 +46,7 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(model_payload["success"])
         self.assertSetEqual(
             set(model_payload["data"].keys()),
-            {"id", "name", "host", "port", "backend", "model_name", "status"},
+            {"id", "name", "host", "port", "backend", "engine", "model_name", "selected_model", "status"},
         )
 
         model_id = model_payload["data"]["id"]
@@ -105,7 +105,7 @@ class ApiTests(unittest.TestCase):
                 "name": "M1",
                 "host": "localhost",
                 "port": 11434,
-                "backend": "ollama",
+                "engine": "ollama",
                 "model_name": "gemma3",
             },
         )
@@ -157,7 +157,7 @@ class ApiTests(unittest.TestCase):
                 "name": "M2",
                 "host": "localhost/evil",
                 "port": 11434,
-                "backend": "ollama",
+                "engine": "ollama",
                 "model_name": "gemma3",
             },
         )
@@ -169,7 +169,7 @@ class ApiTests(unittest.TestCase):
                 "name": "M3",
                 "host": "localhost",
                 "port": 99999,
-                "backend": "ollama",
+                "engine": "ollama",
                 "model_name": "gemma3",
             },
         )
@@ -186,7 +186,7 @@ class ApiTests(unittest.TestCase):
 
         model_id = self.client.post(
             "/api/models",
-            json={"name": "MExport", "host": "localhost", "port": 11434, "backend": "ollama", "model_name": "gemma3"},
+            json={"name": "MExport", "host": "localhost", "port": 11434, "engine": "ollama", "model_name": "gemma3"},
         ).get_json()["data"]["id"]
         agent1 = self.client.post(
             "/api/agents",
@@ -220,6 +220,14 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(csv_export.status_code, 200)
         self.assertEqual(csv_export.mimetype, "text/csv")
         self.assertIn("conversation_id,message_id", csv_export.get_data(as_text=True))
+
+
+    def test_unknown_api_endpoint_returns_json_404(self) -> None:
+        response = self.client.get("/api/does-not-exist")
+        self.assertEqual(response.status_code, 404)
+        payload = response.get_json()
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["error"], "Not Found")
 
 
 if __name__ == "__main__":
