@@ -13,6 +13,15 @@ from app.extensions import db
 from app.models import Agent, Model
 from app.security import sanitize_text_input, validate_host
 from app.services.model_warm import warm_model
+from app.services.status_service import (
+    build_agent_status_payload,
+    build_model_status_payload,
+    check_engine,
+    compute_agent_status,
+    compute_model_status,
+    record_model_load,
+    to_human,
+)
 
 setup_bp = Blueprint("setup", __name__, url_prefix="/api")
 
@@ -37,11 +46,27 @@ def _model_to_dict(model: Model) -> dict[str, Any]:
         "status": model.status,
         "warm_status": model.warm_status,
         "last_warmed_at": model.last_warmed_at.isoformat() if model.last_warmed_at else None,
+        "last_load_attempt_at": model.last_load_attempt_at.isoformat() if model.last_load_attempt_at else None,
+        "last_load_message": model.last_load_message,
+        "last_engine_check_at": model.last_engine_check_at.isoformat() if model.last_engine_check_at else None,
+        "last_engine_message": model.last_engine_message,
     }
 
 
 def _agent_to_dict(agent: Agent) -> dict[str, Any]:
-    effective_status = "green" if agent.status == "ready" and agent.model and agent.model.status == "green" else "yellow"
+    engine_state = {
+        "reachable": bool(agent.model and agent.model.status == "green"),
+    }
+    model_state = {
+        "load_state": "warm" if agent.model and agent.model.warm_status == "warm" else "cold",
+    }
+    aggregate_status = compute_agent_status(agent, model_state, engine_state)
+    effective_status = {
+        "ready": "green",
+        "partially_ready": "yellow",
+        "not_ready": "red",
+        "disabled": "gray",
+    }[aggregate_status]
     return {
         "id": agent.id,
         "name": agent.name,
@@ -54,6 +79,7 @@ def _agent_to_dict(agent: Agent) -> dict[str, Any]:
         "status": agent.status,
         "model_status": agent.model.status if agent.model else "red",
         "effective_status": effective_status,
+        "aggregate_status": aggregate_status,
     }
 
 
@@ -69,13 +95,25 @@ def _connector_for_model(model: Model) -> Connector:
 
 
 def _refresh_model_status(model: Model) -> None:
+    from datetime import datetime
+
+    checked_at = datetime.utcnow()
+    model.last_engine_check_at = checked_at
     try:
         connector = _connector_for_model(model)
         connector.probe()
         models = connector.list_models()
-        model.status = "green" if model.model_name in models else "yellow"
-    except (ConnectorError, ValueError):
+        model.last_engine_message = "ok"
+        engine_state = {"reachable": True}
+        model.status = "green"
+    except (ConnectorError, ValueError) as exc:
+        models = []
+        model.last_engine_message = str(exc) or "connection failed"
+        engine_state = {"reachable": False}
         model.status = "red"
+
+    model_state = compute_model_status(model, engine_state, models)
+    model.warm_status = model_state["load_state"]
 
 
 def _refresh_all_model_statuses() -> None:
@@ -290,7 +328,11 @@ def warm_model_endpoint() -> Any:
         return jsonify({"success": False, "error": "Model not found"}), 404
 
     status = warm_model(model)
-    return jsonify({"success": True, "status": status, "data": {"model_id": model.id, "warm_status": status}})
+    ok = status == "warm"
+    message = "loaded ok" if ok else "failed to load"
+    record_model_load(model, ok=ok, message=message)
+    db.session.commit()
+    return jsonify({"success": True, "status": status, "data": {"model_id": model.id, "warm_status": status, "message": message}})
 
 
 @setup_bp.get("/models/status/<int:model_id>")
@@ -299,7 +341,8 @@ def get_model_status(model_id: int) -> Any:
     if model is None:
         return jsonify({"success": False, "error": "Model not found"}), 404
 
-    return jsonify({"success": True, "warm_status": model.warm_status, "data": {"model_id": model.id, "warm_status": model.warm_status}})
+    payload = build_model_status_payload(model)
+    return jsonify({"success": True, "warm_status": payload["model"]["load_state"], "data": {"model_id": model.id, "warm_status": payload["model"]["load_state"]}})
 
 
 @setup_bp.post("/models/test")
@@ -403,3 +446,90 @@ def delete_agent(agent_id: int) -> Any:
     db.session.delete(agent)
     db.session.commit()
     return jsonify({"success": True, "data": {"message": "Agent deleted"}})
+
+
+@setup_bp.get("/v1/models/<int:model_id>/status")
+def get_model_status_v1(model_id: int) -> Any:
+    model = db.session.get(Model, model_id)
+    if model is None:
+        return jsonify({"success": False, "error": "Model not found"}), 404
+    payload = build_model_status_payload(model)
+    tooltip = (
+        f"Inference engine reachable. Last checked {to_human(model.last_engine_check_at)}."
+        if payload["engine"]["reachable"]
+        else f"Inference engine unreachable at {payload['engine']['host']}. Last checked {to_human(model.last_engine_check_at)}. Click for diagnostics and retry."
+    )
+    payload["engine"]["tooltip"] = tooltip
+    state = payload["model"]["load_state"]
+    if state == "not_present":
+        payload["model"]["tooltip"] = "Model files not found on host. Add model files or update model path."
+    elif state == "cold":
+        payload["model"]["tooltip"] = "Model present on disk but not loaded in engine. Click to load."
+    else:
+        payload["model"]["tooltip"] = f"Model loaded in inference engine (cached). Last loaded {to_human(model.last_load_attempt_at)}."
+    return jsonify(payload)
+
+
+@setup_bp.get("/v1/agents/<int:agent_id>/status")
+def get_agent_status_v1(agent_id: int) -> Any:
+    agent = db.session.get(Agent, agent_id)
+    if agent is None:
+        return jsonify({"success": False, "error": "Agent not found"}), 404
+    payload = build_agent_status_payload(agent)
+    tt = {
+        "ready": "Agent ready to accept queries: engine reachable and model loaded.",
+        "partially_ready": "Agent is configured but runtime unavailable (engine unreachable or model not loaded). Click for diagnostics.",
+        "not_ready": "Agent cannot run (model missing or configuration error). Click to view error.",
+        "disabled": "Agent is disabled.",
+    }
+    payload["agent"]["tooltip"] = tt[payload["agent"]["status"]]
+    return jsonify(payload)
+
+
+@setup_bp.get("/v1/status")
+def get_status_v1() -> Any:
+    model_id = request.args.get("model_id", type=int)
+    agent_id = request.args.get("agent_id", type=int)
+    if model_id:
+        model = db.session.get(Model, model_id)
+        if model is None:
+            return jsonify({"success": False, "error": "Model not found"}), 404
+        return jsonify(build_model_status_payload(model))
+    if agent_id:
+        agent = db.session.get(Agent, agent_id)
+        if agent is None:
+            return jsonify({"success": False, "error": "Agent not found"}), 404
+        return jsonify(build_agent_status_payload(agent))
+    return jsonify({"success": False, "error": "model_id or agent_id is required"}), 400
+
+
+@setup_bp.post("/v1/engine/check")
+def force_engine_check_v1() -> Any:
+    payload = request.get_json(silent=True) or {}
+    model_id = payload.get("model_id")
+    try:
+        model_id = int(model_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "model_id must be an integer"}), 400
+
+    model = db.session.get(Model, model_id)
+    if model is None:
+        return jsonify({"success": False, "error": "Model not found"}), 404
+
+    engine = check_engine(model)
+    db.session.commit()
+    return jsonify({"success": True, "engine": engine})
+
+
+@setup_bp.post("/v1/models/<int:model_id>/reload")
+def reload_model_v1(model_id: int) -> Any:
+    model = db.session.get(Model, model_id)
+    if model is None:
+        return jsonify({"success": False, "error": "Model not found"}), 404
+
+    status = warm_model(model)
+    ok = status == "warm"
+    message = "loaded ok" if ok else "failed to load"
+    record_model_load(model, ok=ok, message=message)
+    db.session.commit()
+    return jsonify({"success": True, "model": {"id": model.id, "load_state": status, "message": message}})

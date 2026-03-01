@@ -175,5 +175,39 @@ class SetupApiTests(unittest.TestCase):
         self.assertEqual(payload["error"], "Engine mismatch")
 
 
+    def test_v1_model_status_tooltip_for_unreachable_engine(self) -> None:
+        model = Model(name="GPU5", host="127.0.0.1", port=11434, backend="ollama", engine="ollama", model_name="llama3", status="red", warm_status="cold")
+        db.session.add(model)
+        db.session.commit()
+
+        response = self.client.get(f"/api/v1/models/{model.id}/status")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertIn("Inference engine unreachable", payload["engine"]["tooltip"])
+
+    def test_v1_model_status_tooltip_for_cold_model(self) -> None:
+        model = Model(name="GPU6", host="127.0.0.1", port=11434, backend="ollama", engine="ollama", model_name="llama3", status="green", warm_status="cold")
+        db.session.add(model)
+        db.session.commit()
+
+        response = self.client.get(f"/api/v1/models/{model.id}/status")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertIn("Model present on disk but not loaded", payload["model"]["tooltip"])
+
+    def test_v1_agent_status_tooltip_for_partially_ready(self) -> None:
+        model = Model(name="GPU7", host="127.0.0.1", port=11434, backend="ollama", engine="ollama", model_name="llama3", status="red", warm_status="cold")
+        db.session.add(model)
+        db.session.flush()
+        agent = Agent(name="agent7", model_id=model.id, system_prompt="hello", max_tokens=32, temperature=0.1, status="ready")
+        db.session.add(agent)
+        db.session.commit()
+
+        response = self.client.get(f"/api/v1/agents/{agent.id}/status")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertIn("configured but runtime unavailable", payload["agent"]["tooltip"])
+
+
 if __name__ == "__main__":
     unittest.main()

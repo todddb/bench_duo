@@ -46,7 +46,7 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(model_payload["success"])
         self.assertSetEqual(
             set(model_payload["data"].keys()),
-            {"id", "name", "host", "port", "backend", "engine", "model_name", "selected_model", "status", "warm_status", "last_warmed_at"},
+            {"id", "name", "host", "port", "backend", "engine", "model_name", "selected_model", "status", "warm_status", "last_warmed_at", "last_load_attempt_at", "last_load_message", "last_engine_check_at", "last_engine_message"},
         )
 
         model_id = model_payload["data"]["id"]
@@ -77,6 +77,7 @@ class ApiTests(unittest.TestCase):
                 "model_status",
                 "effective_status",
                 "engine",
+                "aggregate_status",
             },
         )
 

@@ -29,6 +29,10 @@ class Model(BaseModel):
     status = db.Column(db.String(32), nullable=False, default="unknown")
     warm_status = db.Column(db.String(20), nullable=False, default="cold")
     last_warmed_at = db.Column(db.DateTime, nullable=True)
+    last_load_attempt_at = db.Column(db.DateTime, nullable=True)
+    last_load_message = db.Column(db.Text, nullable=True)
+    last_engine_check_at = db.Column(db.DateTime, nullable=True)
+    last_engine_message = db.Column(db.Text, nullable=True)
 
     agents = db.relationship("Agent", back_populates="model", cascade="all, delete-orphan")
 
